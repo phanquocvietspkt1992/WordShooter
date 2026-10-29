@@ -28,6 +28,13 @@ public static class WordShooterGameplayChecks
         RunCase(CheckPronunciation);
         RunCase(CheckPronunciationReset);
         RunCase(CheckContinuousHits);
+        RunCase(CheckColorBonus);
+        RunCase(CheckExperienceProgression);
+        RunCase(CheckGalaxyProgression);
+        RunCase(CheckAdminTopicUnlocks);
+        RunCase(CheckAdminLogoUnlockGesture);
+        RunCase(CheckAdminStartupDefaultsToUser);
+        RunCase(CheckVersionDisplay);
         RunCase(CheckMissedWords);
         RunCase(CheckRepeatedMeaningReview);
         RunCase(CheckExplosionLifetime);
@@ -45,6 +52,7 @@ public static class WordShooterGameplayChecks
         RunCase(CheckNoTimeLimit);
         RunCase(CheckSafeAreaCoordinates);
         RunCase(CheckGameplayHudLayout);
+        RunCase(CheckResultTitleFits);
         RunCase(CheckVisualEffects);
         RunCase(CheckVocabularyRotation);
         RunCase(CheckCefrLevels);
@@ -65,6 +73,28 @@ public static class WordShooterGameplayChecks
         CheckSpaceTheme();
         CheckMovingSpaceEffects();
         Debug.Log("WordShooter gameplay checks passed: " + passed);
+    }
+
+    [MenuItem("Word Shooter/Run Admin Mode Checks")]
+    public static void RunAdminModeChecks()
+    {
+        if (EditorApplication.isPlaying) throw new InvalidOperationException("Stop Play mode before running checks.");
+        passed = 0;
+        RunCase(CheckUserTopicFlagMigration);
+        RunCase(CheckAdminTopicUnlocks);
+        RunCase(CheckAdminLogoUnlockGesture);
+        RunCase(CheckAdminStartupDefaultsToUser);
+        Debug.Log("WordShooter Admin mode checks passed: " + passed);
+    }
+
+    [MenuItem("Word Shooter/Admin/Unlock All Topics")]
+    public static void UnlockAllTopicsForTesting()
+    {
+        if (EditorApplication.isPlaying)
+            throw new InvalidOperationException("Stop Play mode before changing topic access.");
+
+        VocabularyShooterGame.UnlockAllTopicsForTesting();
+        Debug.Log("All WordShooter topics are now unlocked for testing.");
     }
 
     private static void CheckGeneratedArt()
@@ -213,6 +243,318 @@ public static class WordShooterGameplayChecks
         Call(game, "EndRound");
         Require(Get<float>(game, "muzzleFlash") == 0f, "Result screen clears flash");
         Require(puffs.Count == 0, "Result screen clears smoke");
+    }
+
+    private static void CheckColorBonus(VocabularyShooterGame game)
+    {
+        for (var index = 0; index < 5; index++)
+            PlayerPrefs.SetInt((string)CallStatic("TopicCompletionKey", index), 1);
+        Call(game, "StartRound", "A1");
+        var ordinary = Spawn(game, 132f, 300f);
+        Set(ordinary, "isColorBonus", false);
+        Set(ordinary, "hitsRemaining", 1);
+        Call(game, "OnWordHit", ordinary, 1);
+        Require(Get<float>(game, "colorBonusTimer") == 0f,
+            "Ordinary words do not activate the color bonus");
+
+        var plasmaDamage = Property<float>(game, "PlasmaDamageMultiplier");
+        var special = Spawn(game, 132f, 300f);
+        Set(special, "isColorBonus", true);
+        Set(special, "hitsRemaining", 2);
+        Call(game, "OnWordHit", special, 1);
+        Require(Get<float>(game, "colorBonusTimer") == 0f,
+            "A color bonus activates only after its word is destroyed");
+        Call(game, "OnWordHit", special, 1);
+        var firstColor = Get<Color>(game, "colorBonusColor");
+        Require(Get<float>(game, "colorBonusTimer") == 20f
+            && Property<Color>(game, "ActiveWeaponColor") == firstColor,
+            "Destroying a special word starts a 20-second weapon color effect");
+        Require(Property<float>(game, "PlasmaDamageMultiplier") == plasmaDamage,
+            "The color bonus does not change weapon damage");
+
+        Call(game, "TryFire");
+        var projectiles = Get<IList>(game, "projectiles");
+        Require(projectiles.Count == 1 && Get<Color>(projectiles[0], "color") == firstColor,
+            "New projectiles capture the active bonus color");
+        Call(game, "UpdateShotEffects", 5f);
+        Require(Mathf.Approximately(Get<float>(game, "colorBonusTimer"), 15f),
+            "The color bonus timer counts down during play");
+
+        var secondSpecial = Spawn(game, 132f, 300f);
+        Set(secondSpecial, "isColorBonus", true);
+        Set(secondSpecial, "hitsRemaining", 1);
+        Call(game, "OnWordHit", secondSpecial, 1);
+        Require(Get<float>(game, "colorBonusTimer") == 20f
+            && Get<Color>(game, "colorBonusColor") != firstColor,
+            "A second bonus refreshes the timer and selects a different color");
+
+        Call(game, "StartRound", "A1");
+        Require(Get<float>(game, "colorBonusTimer") == 0f,
+            "Starting a round clears the previous color bonus");
+        Set(game, "colorBonusTimer", 3f);
+        Call(game, "EndRound");
+        Require(Get<float>(game, "colorBonusTimer") == 0f,
+            "Ending a round clears the color bonus");
+    }
+
+    private static void CheckExperienceProgression(VocabularyShooterGame game)
+    {
+        var xpKey = "WordGalaxy.TotalExperience";
+        var dateKey = "WordGalaxy.DailyExperienceDate.food";
+        var countKey = "WordGalaxy.DailyExperienceWords.food";
+        var homeDateKey = "WordGalaxy.DailyExperienceDate.home";
+        var homeCountKey = "WordGalaxy.DailyExperienceWords.home";
+        var hadXp = PlayerPrefs.HasKey(xpKey);
+        var hadFoodDate = PlayerPrefs.HasKey(dateKey);
+        var hadFoodCount = PlayerPrefs.HasKey(countKey);
+        var hadHomeDate = PlayerPrefs.HasKey(homeDateKey);
+        var hadHomeCount = PlayerPrefs.HasKey(homeCountKey);
+        var oldFoodDate = PlayerPrefs.GetString(dateKey, string.Empty);
+        var oldHomeDate = PlayerPrefs.GetString(homeDateKey, string.Empty);
+        var oldXp = PlayerPrefs.GetInt(xpKey, 0);
+        var oldFoodCount = PlayerPrefs.GetInt(countKey, 0);
+        var oldHomeCount = PlayerPrefs.GetInt(homeCountKey, 0);
+        var oldTopic = Get<string>(game, "currentTopic");
+        var oldRoundExperience = Get<int>(game, "roundExperienceEarned");
+        try
+        {
+            var today = (string)CallStatic("TodayKey");
+            var thresholds = new[] { 0, 50, 100, 150, 200 };
+            var expectedExperience = new[] { 10, 6, 3, 1, 0 };
+            for (var index = 0; index < thresholds.Length; index++)
+            {
+                PlayerPrefs.SetString(dateKey, today);
+                PlayerPrefs.SetInt(countKey, thresholds[index]);
+                PlayerPrefs.SetInt(xpKey, 0);
+                Set(game, "currentTopic", "food");
+                Set(game, "roundExperienceEarned", 0);
+                var awarded = (int)Call(game, "AwardExperienceForDestroyedWord");
+                Require(awarded == expectedExperience[index]
+                    && Get<int>(game, "roundExperienceEarned") == awarded,
+                    "Daily topic XP follows the 100/60/30/10/0 percent tiers");
+                Require(PlayerPrefs.GetInt(countKey) == thresholds[index] + 1,
+                    "Every destroyed word advances the daily topic counter");
+            }
+
+            PlayerPrefs.SetString(dateKey, "20000101");
+            PlayerPrefs.SetInt(countKey, 200);
+            PlayerPrefs.SetInt(xpKey, 90);
+            Set(game, "roundExperienceEarned", 0);
+            var afterReset = (int)Call(game, "AwardExperienceForDestroyedWord");
+            Require(afterReset == 10 && PlayerPrefs.GetInt(countKey) == 1,
+                "A new local calendar day restores the topic's full XP rate");
+            Require(Property<int>(game, "TotalExperience") == 100
+                && Property<int>(game, "PlayerRank") == 2,
+                "Lifetime XP persists and advances the character rank");
+
+            PlayerPrefs.SetString(homeDateKey, today);
+            PlayerPrefs.SetInt(homeCountKey, 75);
+            Set(game, "currentTopic", "home");
+            Require((int)CallStatic("GetDailyTopicWordCount", "home") == 75
+                && Mathf.Approximately((float)CallStatic("GetDailyExperienceMultiplier", "home"), 0.3f),
+                "Daily diminishing XP is tracked independently for each topic");
+        }
+        finally
+        {
+            if (hadXp) PlayerPrefs.SetInt(xpKey, oldXp);
+            else PlayerPrefs.DeleteKey(xpKey);
+            if (hadFoodDate) PlayerPrefs.SetString(dateKey, oldFoodDate);
+            else PlayerPrefs.DeleteKey(dateKey);
+            if (hadFoodCount) PlayerPrefs.SetInt(countKey, oldFoodCount);
+            else PlayerPrefs.DeleteKey(countKey);
+            if (hadHomeDate) PlayerPrefs.SetString(homeDateKey, oldHomeDate);
+            else PlayerPrefs.DeleteKey(homeDateKey);
+            if (hadHomeCount) PlayerPrefs.SetInt(homeCountKey, oldHomeCount);
+            else PlayerPrefs.DeleteKey(homeCountKey);
+            PlayerPrefs.Save();
+            Set(game, "currentTopic", oldTopic);
+            Set(game, "roundExperienceEarned", oldRoundExperience);
+        }
+    }
+
+    private static void CheckGalaxyProgression(VocabularyShooterGame game)
+    {
+        const string unlockTokenKey = "WordGalaxy.TopicUnlockTokens";
+        var ids = (string[])typeof(VocabularyShooterGame)
+            .GetField("TopicIds", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
+        PlayerPrefs.SetInt("WordGalaxy.TopicUnlockMigration", 1);
+        PlayerPrefs.SetInt(unlockTokenKey, 0);
+        for (var index = 0; index < ids.Length; index++)
+        {
+            PlayerPrefs.SetInt((string)CallStatic("TopicCompletionKey", index), 0);
+            PlayerPrefs.SetInt((string)CallStatic("TopicUnlockKey", index), index == 0 ? 1 : 0);
+            PlayerPrefs.SetInt((string)CallStatic("TopicChoiceAwardedKey", index), 0);
+        }
+        Call(game, "StartRound", "A1");
+        Require(!(bool)Call(game, "TryStartTopic", "home") && Get<string>(game, "currentTopic") == "food",
+            "Locked planets cannot be started from the map");
+
+        Set(game, "destroyedCount", 49);
+        Call(game, "EndRound");
+        Require(PlayerPrefs.GetInt(unlockTokenKey) == 0,
+            "An incomplete topic does not grant a planet choice");
+
+        Call(game, "StartRound", "A1");
+        Set(game, "destroyedCount", 50);
+        Call(game, "EndRound");
+        Require(Property<int>(game, "UnlockedTopicCount") == 1
+            && (bool)CallStatic("IsTopicComplete", 0)
+            && PlayerPrefs.GetInt(unlockTokenKey) == 1
+            && Get<string>(game, "roundUnlockMessage").Contains("CHOOSE ANY"),
+            "First topic completion grants one free choice of any planet");
+
+        var chosenTopicIndex = 4;
+        Require((bool)Call(game, "TryStartTopic", ids[chosenTopicIndex])
+            && (bool)CallStatic("IsTopicUnlocked", chosenTopicIndex)
+            && Property<int>(game, "UnlockedTopicCount") == 2
+            && PlayerPrefs.GetInt(unlockTokenKey) == 0,
+            "A choice token opens the player's selected non-sequential topic");
+
+        Call(game, "StartRound", "A1");
+        Set(game, "destroyedCount", 50);
+        Call(game, "EndRound");
+        Require(PlayerPrefs.GetInt(unlockTokenKey) == 0,
+            "Replaying a completed topic cannot farm another planet choice");
+
+        for (var index = 1; index < 4; index++)
+        {
+            PlayerPrefs.SetInt((string)CallStatic("TopicCompletionKey", index), 1);
+            PlayerPrefs.SetInt((string)CallStatic("TopicChoiceAwardedKey", index), 1);
+        }
+        Set(game, "currentTopic", ids[4]);
+        PlayerPrefs.SetInt((string)CallStatic("TopicCompletionKey", 4), 1);
+        Call(game, "CompleteCurrentTopic");
+        Require(PlayerPrefs.GetInt(unlockTokenKey) == 1
+            && PlayerPrefs.GetInt((string)CallStatic("TopicChoiceAwardedKey", 4)) == 1
+            && Property<int>(game, "UnlockedColorCount") == 2
+            && Get<string>(game, "roundUnlockMessage").Contains("NEW SHIP COLOR"),
+            "An already-completed saved topic still grants its unclaimed choice and cosmetic reward");
+        Call(game, "CompleteCurrentTopic");
+        Require(PlayerPrefs.GetInt(unlockTokenKey) == 1,
+            "Claiming a topic choice more than once does not grant extra tokens");
+
+        const int legacyCompletedTopicIndex = 6;
+        PlayerPrefs.SetInt("WordGalaxy.TopicChoiceAwardMigration", 0);
+        PlayerPrefs.SetInt(unlockTokenKey, 0);
+        PlayerPrefs.SetInt((string)CallStatic("TopicCompletionKey", legacyCompletedTopicIndex), 1);
+        PlayerPrefs.SetInt((string)CallStatic("TopicChoiceAwardedKey", legacyCompletedTopicIndex), 0);
+        CallStatic("EnsureTopicChoiceAwardMigration");
+        Require(PlayerPrefs.GetInt(unlockTokenKey) == 1
+            && PlayerPrefs.GetInt((string)CallStatic("TopicChoiceAwardedKey", legacyCompletedTopicIndex)) == 1,
+            "Migration grants one choice for a previously completed topic with no recorded award");
+        CallStatic("EnsureTopicChoiceAwardMigration");
+        Require(PlayerPrefs.GetInt(unlockTokenKey) == 1,
+            "Choice-award migration runs once and cannot duplicate tokens");
+    }
+
+    private static void CheckAdminTopicUnlocks(VocabularyShooterGame game)
+    {
+        var ids = (string[])typeof(VocabularyShooterGame)
+            .GetField("TopicIds", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
+        CallStatic("UnlockAllTopicsForTesting");
+        for (var index = 0; index < ids.Length; index++)
+        {
+            Require((bool)CallStatic("IsTopicUnlocked", index),
+                "Admin testing unlocks every topic");
+            Require(!(bool)CallStatic("IsTopicComplete", index),
+                "Admin topic access does not mark topics completed");
+        }
+        Require(Property<int>(game, "UnlockedColorCount") == 1,
+            "Admin topic access does not grant completion-based cosmetic rewards");
+        CallStatic("SetAdminMode", false);
+        Require(PlayerPrefs.GetInt("WordGalaxy.AdminModeEnabled") == 0
+            && (bool)CallStatic("IsTopicUnlocked", 0)
+            && !(bool)CallStatic("IsTopicUnlocked", 1)
+            && PlayerPrefs.GetInt((string)CallStatic("TopicUnlockKey", 1)) == 0,
+            "Admin mode toggles off without mutating per-topic User flags");
+    }
+
+    private static void CheckUserTopicFlagMigration(VocabularyShooterGame game)
+    {
+        var ids = (string[])typeof(VocabularyShooterGame)
+            .GetField("TopicIds", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
+        PlayerPrefs.SetInt("WordGalaxy.UserTopicFlagsMigration", 0);
+        PlayerPrefs.SetInt("WordGalaxy.UnlockedTopicIndex", 2);
+        PlayerPrefs.SetInt("WordGalaxy.AdminUserUnlockBackupValid", 1);
+        for (var index = 0; index < ids.Length; index++)
+        {
+            PlayerPrefs.SetInt((string)CallStatic("TopicUnlockKey", index), 1);
+            PlayerPrefs.SetInt((string)CallStatic("AdminUnlockBackupKey", index), 1);
+            PlayerPrefs.SetInt((string)CallStatic("TopicCompletionKey", index), 1);
+        }
+
+        CallStatic("EnsureUserTopicFlagsMigration");
+        Require((bool)CallStatic("IsTopicUnlocked", 0)
+            && (bool)CallStatic("IsTopicUnlocked", 1)
+            && (bool)CallStatic("IsTopicUnlocked", 2)
+            && !(bool)CallStatic("IsTopicUnlocked", 3),
+            "Legacy Admin all-open flags migrate back to the saved User frontier");
+        Require(PlayerPrefs.GetInt("WordGalaxy.UserTopicFlagsMigration") == 2,
+            "User topic flags migrate to the current schema version");
+
+        PlayerPrefs.SetInt("WordGalaxy.UserTopicFlagsMigration", 1);
+        PlayerPrefs.SetInt("WordGalaxy.AdminUserUnlockBackupValid", 0);
+        PlayerPrefs.SetInt("WordGalaxy.UnlockedTopicIndex", 2);
+        for (var index = 0; index < ids.Length; index++)
+        {
+            PlayerPrefs.SetInt((string)CallStatic("TopicUnlockKey", index), 1);
+            PlayerPrefs.SetInt((string)CallStatic("TopicCompletionKey", index), 1);
+        }
+        CallStatic("EnsureUserTopicFlagsMigration");
+        Require(PlayerPrefs.GetInt("WordGalaxy.UserTopicFlagsMigration") == 2
+            && (bool)CallStatic("IsTopicUnlocked", 2)
+            && !(bool)CallStatic("IsTopicUnlocked", 3),
+            "Version-one saves with full topic flags migrate to their legacy User frontier");
+    }
+
+    private static void CheckAdminLogoUnlockGesture(VocabularyShooterGame game)
+    {
+        Call(game, "RegisterAdminLogoTap", 0f);
+        Call(game, "RegisterAdminLogoTap", 1f);
+        Call(game, "RegisterAdminLogoTap", 2.1f);
+        Require(PlayerPrefs.GetInt("WordGalaxy.AdminModeEnabled") == 0
+            && Get<int>(game, "adminLogoTapCount") == 1,
+            "Logo taps outside the two-second window do not switch modes");
+
+        Call(game, "RegisterAdminLogoTap", 2.2f);
+        Call(game, "RegisterAdminLogoTap", 2.7f);
+        Call(game, "RegisterAdminLogoTap", 3.2f);
+        Require(PlayerPrefs.GetInt("WordGalaxy.AdminModeEnabled") == 1,
+            "Three logo taps within two seconds switch User directly to Admin");
+        for (var index = 0; index < VocabularyTopicData.Topics.Length; index++)
+        {
+            Require((bool)CallStatic("IsTopicUnlocked", index),
+                "Admin mode opens every topic");
+            Require(!(bool)CallStatic("IsTopicComplete", index),
+                "Admin access leaves topic completion untouched");
+        }
+
+        Call(game, "RegisterAdminLogoTap", 3.3f);
+        Call(game, "RegisterAdminLogoTap", 3.8f);
+        Call(game, "RegisterAdminLogoTap", 4.2f);
+        Require(PlayerPrefs.GetInt("WordGalaxy.AdminModeEnabled") == 0
+            && (bool)CallStatic("IsTopicUnlocked", 0)
+            && !(bool)CallStatic("IsTopicUnlocked", 4),
+            "Three more logo taps switch Admin back to User and restore prior topic access");
+    }
+
+    private static void CheckAdminStartupDefaultsToUser(VocabularyShooterGame game)
+    {
+        CallStatic("UnlockAllTopicsForTesting");
+        Require(PlayerPrefs.GetInt("WordGalaxy.AdminModeEnabled") == 1
+            && (bool)CallStatic("IsTopicUnlocked", 4),
+            "Admin mode is active before the simulated app restart");
+        CallStatic("EnsureUserModeAtStartup");
+        Require(PlayerPrefs.GetInt("WordGalaxy.AdminModeEnabled") == 0
+            && (bool)CallStatic("IsTopicUnlocked", 0)
+            && !(bool)CallStatic("IsTopicUnlocked", 4),
+            "A new app launch returns to User and restores prior topic access");
+    }
+
+    private static void CheckVersionDisplay(VocabularyShooterGame game)
+    {
+        Require(Property<string>(game, "VersionDisplayText") == "VERSION " + Application.version,
+            "Main menu version label uses the Unity application version");
     }
 
     private static void CheckVocabularyRotation(VocabularyShooterGame game)
@@ -369,6 +711,8 @@ public static class WordShooterGameplayChecks
     {
         var ids = (string[])typeof(VocabularyShooterGame).GetField("TopicIds",
             BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
+        var alphabeticalIndices = (int[])typeof(VocabularyShooterGame)
+            .GetField("AlphabeticalTopicIndices", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
         var levelNames = (string[])typeof(VocabularyShooterGame).GetField("LevelNames",
             BindingFlags.Static | BindingFlags.NonPublic).GetValue(null);
         var planetNames = (string[])typeof(VocabularyShooterGame).GetField("PlanetNames",
@@ -398,6 +742,13 @@ public static class WordShooterGameplayChecks
                 && displayedName.IndexOfAny("áàảãạăắằẳẵặâấầẩẫậđéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵ".ToCharArray()) < 0,
                 "Topic menu labels are displayed in English");
         }
+        for (var index = 1; index < alphabeticalIndices.Length; index++)
+        {
+            var previousName = (string)getTopicName.Invoke(null, new object[] { alphabeticalIndices[index - 1] });
+            var currentName = (string)getTopicName.Invoke(null, new object[] { alphabeticalIndices[index] });
+            Require(StringComparer.OrdinalIgnoreCase.Compare(previousName, currentName) <= 0,
+            "Galaxy-map topics are displayed in alphabetical order");
+        }
 
         foreach (var label in levelNames)
             Require(IsEnglishLabel(label), "Level names are displayed in English");
@@ -406,7 +757,7 @@ public static class WordShooterGameplayChecks
 
         Call(game, "UpdateLayout");
         var viewport = Property<Rect>(game, "TopicSelectionViewport");
-        var topicTextWidth = viewport.width - 14f - 32f;
+        var topicTextWidth = viewport.width - 14f - 126f;
         for (var index = 0; index < topics.Length; index++)
         {
             var displayedName = (string)getTopicName.Invoke(null, new object[] { index });
@@ -461,13 +812,15 @@ public static class WordShooterGameplayChecks
 
         Set(game, "topicScrollPosition", Vector2.zero);
         var topicIndex = 1;
+        PlayerPrefs.SetInt("WordGalaxy.TopicUnlockMigration", 1);
+        PlayerPrefs.SetInt("WordGalaxy.TopicUnlockTokens", 1);
         var tap = new Vector2(viewport.center.x,
             viewport.yMin + topicIndex * rowStride + rowHeight * 0.5f);
         Call(game, "HandleTopicSelectionTouch",
             new Touch { fingerId = 73, phase = TouchPhase.Began }, tap);
         Call(game, "HandleTopicSelectionTouch",
             new Touch { fingerId = 73, phase = TouchPhase.Ended }, tap);
-        Require(Get<string>(game, "currentTopic") == ids[topicIndex]
+        Require(Get<string>(game, "currentTopic") == ids[alphabeticalIndices[topicIndex]]
             && Get<object>(game, "screenState").ToString() == "Playing",
             "A deliberate tap selects the topic under the finger");
     }
@@ -496,6 +849,10 @@ public static class WordShooterGameplayChecks
             PlayerPrefs.DeleteKey(foodKey);
             PlayerPrefs.DeleteKey(homeKey);
             PlayerPrefs.DeleteKey(legacyFoodKey);
+            PlayerPrefs.SetInt("WordGalaxy.TopicUnlockMigration", 1);
+            PlayerPrefs.SetInt("WordGalaxy.TopicUnlockTokens", 0);
+            PlayerPrefs.SetInt((string)CallStatic("TopicUnlockKey", 0), 1);
+            PlayerPrefs.SetInt((string)CallStatic("TopicUnlockKey", 1), 1);
             Call(game, "StartRound", "A1");
             Set(game, "score", 20);
             Call(game, "EndRound");
@@ -761,6 +1118,62 @@ public static class WordShooterGameplayChecks
 
     private static void RunCase(Action<VocabularyShooterGame> check)
     {
+        var progressionKeys = new[]
+        {
+            "WordGalaxy.UnlockedTopicIndex",
+            "WordGalaxy.TopicUnlockTokens",
+            "WordGalaxy.TopicUnlockMigration",
+            "WordGalaxy.TopicChoiceAwardMigration",
+            "WordGalaxy.UserTopicFlagsMigration",
+            "WordGalaxy.AdminModeEnabled",
+            "WordGalaxy.AdminUserUnlockBackupValid"
+        };
+        var hadProgressionKeys = new bool[progressionKeys.Length];
+        var oldProgressionValues = new int[progressionKeys.Length];
+        for (var index = 0; index < progressionKeys.Length; index++)
+        {
+            hadProgressionKeys[index] = PlayerPrefs.HasKey(progressionKeys[index]);
+            oldProgressionValues[index] = PlayerPrefs.GetInt(progressionKeys[index], 0);
+        }
+        var completionKeys = new string[VocabularyTopicData.Topics.Length];
+        var unlockKeys = new string[completionKeys.Length];
+        var choiceAwardKeys = new string[completionKeys.Length];
+        var adminBackupKeys = new string[completionKeys.Length];
+        var hadCompletions = new bool[completionKeys.Length];
+        var oldCompletions = new int[completionKeys.Length];
+        var hadUnlocks = new bool[unlockKeys.Length];
+        var oldUnlocks = new int[unlockKeys.Length];
+        var hadChoiceAwards = new bool[choiceAwardKeys.Length];
+        var oldChoiceAwards = new int[choiceAwardKeys.Length];
+        var hadAdminBackups = new bool[adminBackupKeys.Length];
+        var oldAdminBackups = new int[adminBackupKeys.Length];
+        for (var index = 0; index < completionKeys.Length; index++)
+        {
+            completionKeys[index] = (string)CallStatic("TopicCompletionKey", index);
+            unlockKeys[index] = (string)CallStatic("TopicUnlockKey", index);
+            choiceAwardKeys[index] = (string)CallStatic("TopicChoiceAwardedKey", index);
+            adminBackupKeys[index] = (string)CallStatic("AdminUnlockBackupKey", index);
+            hadCompletions[index] = PlayerPrefs.HasKey(completionKeys[index]);
+            oldCompletions[index] = PlayerPrefs.GetInt(completionKeys[index], 0);
+            hadUnlocks[index] = PlayerPrefs.HasKey(unlockKeys[index]);
+            oldUnlocks[index] = PlayerPrefs.GetInt(unlockKeys[index], 0);
+            hadChoiceAwards[index] = PlayerPrefs.HasKey(choiceAwardKeys[index]);
+            oldChoiceAwards[index] = PlayerPrefs.GetInt(choiceAwardKeys[index], 0);
+            hadAdminBackups[index] = PlayerPrefs.HasKey(adminBackupKeys[index]);
+            oldAdminBackups[index] = PlayerPrefs.GetInt(adminBackupKeys[index], 0);
+        }
+        PlayerPrefs.SetInt("WordGalaxy.TopicUnlockMigration", 1);
+        PlayerPrefs.SetInt("WordGalaxy.UserTopicFlagsMigration", 2);
+        PlayerPrefs.SetInt("WordGalaxy.TopicUnlockTokens", 0);
+        PlayerPrefs.SetInt("WordGalaxy.AdminModeEnabled", 0);
+        PlayerPrefs.SetInt("WordGalaxy.AdminUserUnlockBackupValid", 0);
+        for (var index = 0; index < completionKeys.Length; index++)
+        {
+            PlayerPrefs.SetInt(completionKeys[index], 0);
+            PlayerPrefs.SetInt(unlockKeys[index], index == 0 ? 1 : 0);
+            PlayerPrefs.SetInt(choiceAwardKeys[index], 0);
+            PlayerPrefs.DeleteKey(adminBackupKeys[index]);
+        }
         var owner = new GameObject("WordShooterGameplayCheck") { hideFlags = HideFlags.HideAndDontSave };
         try
         {
@@ -773,6 +1186,24 @@ public static class WordShooterGameplayChecks
         }
         finally
         {
+            for (var index = 0; index < progressionKeys.Length; index++)
+            {
+                if (hadProgressionKeys[index])
+                    PlayerPrefs.SetInt(progressionKeys[index], oldProgressionValues[index]);
+                else PlayerPrefs.DeleteKey(progressionKeys[index]);
+            }
+            for (var index = 0; index < completionKeys.Length; index++)
+            {
+                if (hadCompletions[index]) PlayerPrefs.SetInt(completionKeys[index], oldCompletions[index]);
+                else PlayerPrefs.DeleteKey(completionKeys[index]);
+                if (hadUnlocks[index]) PlayerPrefs.SetInt(unlockKeys[index], oldUnlocks[index]);
+                else PlayerPrefs.DeleteKey(unlockKeys[index]);
+                if (hadChoiceAwards[index]) PlayerPrefs.SetInt(choiceAwardKeys[index], oldChoiceAwards[index]);
+                else PlayerPrefs.DeleteKey(choiceAwardKeys[index]);
+                if (hadAdminBackups[index]) PlayerPrefs.SetInt(adminBackupKeys[index], oldAdminBackups[index]);
+                else PlayerPrefs.DeleteKey(adminBackupKeys[index]);
+            }
+            PlayerPrefs.Save();
             UnityEngine.Object.DestroyImmediate(owner);
         }
     }
@@ -1559,15 +1990,15 @@ public static class WordShooterGameplayChecks
                 var previous = new Rect(18f, 16f, 36f, 36f);
                 var score = Property<Rect>(game, "ScoreHudRect");
                 Require(Mathf.Abs(score.center.x - width * 0.5f) < 0.01f
-                    && score.xMin > previous.xMax && score.yMin == 16f,
-                    "Score remains centered at the top without overlapping the exit button");
+                                && score.xMin > previous.xMax && score.yMin == 16f,
+                                "Score remains centered at the top without overlapping the exit button");
                 for (var index = 0; index < 3; index++)
                 {
                     var rect = (Rect)Call(game, "GameplayHudLabelRect", index);
                     Require(rect.xMin >= previous.xMax + (index == 0 ? 5f : 0f)
-                        && rect.xMax <= width - 18f
-                        && rect.width > 0f,
-                        "Gameplay HUD columns do not overlap or extend past the screen");
+                                        && rect.xMax <= width - 18f
+                                        && rect.width > 0f,
+                                        "Gameplay HUD columns do not overlap or extend past the screen");
                     previous = rect;
                 }
                 Require(score.xMax < previous.xMin,
@@ -1577,6 +2008,18 @@ public static class WordShooterGameplayChecks
         finally
         {
             Set(game, "uiWidth", originalWidth);
+        }
+    }
+
+    private static void CheckResultTitleFits(VocabularyShooterGame game)
+    {
+        Call(game, "PrepareStyles");
+        var title = "ROUND COMPLETE  •  B2";
+        foreach (var width in new[] { 340f, 280f, 220f })
+        {
+            var style = (GUIStyle)Call(game, "CreateFittedTitleStyle", title, width);
+            Require(!style.wordWrap && style.CalcSize(new GUIContent(title)).x <= width - 4f,
+                "Round-complete title stays on one line within compact and standard widths");
         }
     }
 
@@ -1619,7 +2062,7 @@ public static class WordShooterGameplayChecks
     private static object CallStatic(string name, params object[] args)
     {
         return typeof(VocabularyShooterGame)
-            .GetMethod(name, BindingFlags.Static | BindingFlags.NonPublic)
+            .GetMethod(name, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
             .Invoke(null, args);
     }
 

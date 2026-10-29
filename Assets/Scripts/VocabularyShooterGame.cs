@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using UnityEngine;
 
 public sealed class VocabularyShooterGame : MonoBehaviour
@@ -69,6 +70,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         public float damageCarry;
         public float hitFlash;
         public float age;
+        public bool isColorBonus;
         public bool firstPronunciationQueued;
         public bool halfHealthPronunciationQueued;
     }
@@ -79,6 +81,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         public Vector2 velocity;
         public float damage;
         public int level;
+        public Color color;
     }
 
     private sealed class WordExplosion
@@ -107,6 +110,23 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private const float BackSwipeZoneWidth = 44f;
     private const float BackSwipeZoneHeightRatio = 0.8f;
     private const float ProjectileRadius = 5f;
+    private const float ColorBonusDuration = 20f;
+    private const float ColorBonusSpawnChance = 0.1f;
+    private const int TopicsPerCosmeticReward = 5;
+    private const string AdminModeKey = "WordGalaxy.AdminModeEnabled";
+    private const string AdminUnlockBackupKeyPrefix = "WordGalaxy.AdminUserUnlockBackup.";
+    private const string AdminUnlockBackupValidKey = "WordGalaxy.AdminUserUnlockBackupValid";
+    private const int UserTopicFlagsMigrationVersion = 2;
+    private const string UserTopicFlagsMigrationKey = "WordGalaxy.UserTopicFlagsMigration";
+    private const string LegacyUnlockedTopicIndexKey = "WordGalaxy.UnlockedTopicIndex";
+    private const string TopicUnlockTokenKey = "WordGalaxy.TopicUnlockTokens";
+    private const string TopicUnlockKeyPrefix = "WordGalaxy.TopicUnlocked.";
+    private const string TopicChoiceAwardedKeyPrefix = "WordGalaxy.TopicChoiceAwarded.";
+    private const string TopicChoiceAwardMigrationKey = "WordGalaxy.TopicChoiceAwardMigration";
+    private const string CompletedTopicKeyPrefix = "WordGalaxy.TopicComplete.";
+    private const int ExperiencePerDestroyedWord = 10;
+    private const int DailyExperienceTierSize = 50;
+    private const int ExperiencePerRank = 100;
     private const float ShotRateMultiplier = 1.35f;
     private const float ShotInterval = 0.22f / 0.7f / 0.4f / 1.2f / ShotRateMultiplier;
     private const float ProjectileSpeed = 850f;
@@ -119,6 +139,15 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private const float PlasmaLevelSpeedStep = 0.08f;
     private static readonly int[] PlasmaThresholds = { 0, 100, 220, 360, 450 };
     private static readonly string[] PlasmaNames = { "I", "II", "III", "IV", "V" };
+    private static readonly Color[] ColorBonusPalette =
+    {
+        new Color(1f, 0.38f, 0.16f),
+        new Color(1f, 0.28f, 0.62f),
+        new Color(0.52f, 1f, 0.25f),
+        new Color(1f, 0.82f, 0.22f),
+        new Color(0.34f, 0.58f, 1f)
+    };
+    private static readonly float[] DailyExperienceMultipliers = { 1f, 0.6f, 0.3f, 0.1f };
 
     private static readonly WordEntry[] FoodWords =
     {
@@ -278,12 +307,27 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         "DECIDE", "SOFTWARE", "CODE", "DB/API", "SYSTEM", "TEST", "DEVOPS",
         "INCIDENT", "CAREER", "GROWTH"
     };
+    private static readonly int[] AlphabeticalTopicIndices = BuildAlphabeticalTopicIndices();
     private const float TopicRowHeight = 56f;
     private const float TopicRowGap = 6f;
     private const float TopicDragThreshold = 14f;
     private static readonly WordEntry[][][] TopicLevelWordPools = BuildTopicLevelWordPools();
     private static readonly WordEntry[][] LevelWordPools = BuildLevelWordPools();
     private static readonly WordEntry[] AllWords = BuildAllWords();
+
+    private static int[] BuildAlphabeticalTopicIndices()
+    {
+        var indices = new int[TopicIds.Length];
+        for (var index = 0; index < indices.Length; index++) indices[index] = index;
+        Array.Sort(indices, (left, right) =>
+        {
+            var nameOrder = StringComparer.OrdinalIgnoreCase.Compare(
+                VocabularyTopicData.Topics[left].DisplayName, VocabularyTopicData.Topics[right].DisplayName);
+            return nameOrder != 0 ? nameOrder
+                : StringComparer.OrdinalIgnoreCase.Compare(TopicIds[left], TopicIds[right]);
+        });
+        return indices;
+    }
 
     private static WordEntry[] BuildAllWords()
     {
@@ -467,6 +511,12 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private bool mouseAiming;
     private float muzzleFlash;
     private float upgradeTimer;
+    private float colorBonusTimer;
+    private Color colorBonusColor;
+    private int roundExperienceEarned;
+    private string roundUnlockMessage;
+    private int adminLogoTapCount;
+    private float adminFirstLogoTapTime;
     private Texture2D gunTexture;
     private Texture2D glowTexture;
     private Texture2D ringTexture;
@@ -519,6 +569,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private int PlasmaLevel => score >= 450 ? 5 : score >= 360 ? 4 : score >= 220 ? 3 : score >= 100 ? 2 : 1;
     private float PlasmaDamageMultiplier => (1f + (PlasmaLevel - 1) * 0.2f) * 0.35f * 1.25f * 1.4f * 1.2f;
     private float PlasmaSpeedMultiplier => 1f + (PlasmaLevel - 1) * PlasmaLevelSpeedStep;
+    private Color ActiveWeaponColor => colorBonusTimer > 0f ? colorBonusColor : PlasmaColor(PlasmaLevel);
     private float UpgradeProgress => PlasmaLevel == 5 ? 1f :
         Mathf.InverseLerp(PlasmaThresholds[PlasmaLevel - 1], PlasmaThresholds[PlasmaLevel], score);
 
@@ -556,7 +607,37 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private int CurrentLevelIndex => LevelIndex(currentLevel);
     private WordEntry[] CurrentWordPool => TopicLevelWordPools[CurrentLevelIndex][TopicIndex(currentTopic)];
     private string RoundProgressText => destroyedCount + "/" + CurrentWordPool.Length;
+    private string VersionDisplayText => "VERSION " + Application.version;
     private Color CurrentPlanetColor => WordShooterArt.PlanetColor(selectedLevelIndex);
+    private static bool IsAdminMode => PlayerPrefs.GetInt(AdminModeKey, 0) != 0;
+    private int UnlockedTopicCount => GetUnlockedTopicCount();
+    private int TopicUnlockTokens
+    {
+        get
+        {
+            EnsureTopicChoiceAwardMigration();
+            return PlayerPrefs.GetInt(TopicUnlockTokenKey, 0);
+        }
+    }
+    private int UnlockedColorCount => Mathf.Clamp(1 + GetCompletedTopicCount() / TopicsPerCosmeticReward,
+        1, ColorBonusPalette.Length);
+    private int TotalExperience => PlayerPrefs.GetInt("WordGalaxy.TotalExperience", 0);
+    private int PlayerRank
+    {
+        get
+        {
+            var rank = 1;
+            var remainingExperience = TotalExperience;
+            var experienceRequired = ExperiencePerRank;
+            while (remainingExperience >= experienceRequired)
+            {
+                remainingExperience -= experienceRequired;
+                rank++;
+                experienceRequired = rank * ExperiencePerRank;
+            }
+            return rank;
+        }
+    }
 
     private void Awake()
     {
@@ -564,6 +645,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         {
             return;
         }
+        EnsureUserModeAtStartup();
 
         Screen.orientation = ScreenOrientation.Portrait;
         Application.targetFrameRate = 60;
@@ -870,6 +952,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private void UpdateShotEffects(float deltaTime)
     {
         upgradeTimer = Mathf.Max(0f, upgradeTimer - deltaTime);
+        colorBonusTimer = Mathf.Max(0f, colorBonusTimer - deltaTime);
         muzzleFlash = Mathf.Max(0f, muzzleFlash - deltaTime);
         for (var index = hitSparks.Count - 1; index >= 0; index--)
         {
@@ -1103,7 +1186,8 @@ public sealed class VocabularyShooterGame : MonoBehaviour
             position = MuzzlePosition,
             velocity = aimDirection * ProjectileSpeed,
             damage = PlasmaDamageMultiplier,
-            level = PlasmaLevel
+            level = PlasmaLevel,
+            color = ActiveWeaponColor
         });
         shotCooldown = ShotInterval;
         muzzleFlash = 0.09f;
@@ -1266,7 +1350,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
                 && topicTouchStartIndex >= 0
                 && TopicIndexAtPoint(point) == topicTouchStartIndex)
             {
-                TryStartTopic(TopicIds[topicTouchStartIndex]);
+                TryStartTopic(TopicIds[AlphabeticalTopicIndices[topicTouchStartIndex]]);
             }
             ResetTopicSelectionTouch();
         }
@@ -1499,8 +1583,15 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
     private void DrawMenu()
     {
-        GUI.Label(new Rect(28f, uiHeight * 0.08f, uiWidth - 56f, 58f), "WORD GALAXY", titleStyle);
+        var logoRect = new Rect(28f, uiHeight * 0.08f, uiWidth - 56f, 58f);
+        if (GUI.Button(logoRect, GUIContent.none, GUIStyle.none))
+            RegisterAdminLogoTap(Time.unscaledTime);
+        GUI.Label(logoRect, "WORD GALAXY", titleStyle);
         GUI.Label(new Rect(34f, uiHeight * 0.18f, uiWidth - 68f, 30f), "Choose a level", bodyStyle);
+        var playerStatus = IsAdminMode ? "ADMIN MODE  •  FULL TOPIC ACCESS"
+            : "PLAYER RANK " + PlayerRank + "  •  " + TotalExperience + " XP";
+        GUI.Label(new Rect(30f, uiHeight * 0.225f, uiWidth - 60f, 20f),
+            playerStatus, smallStyle);
 
         var rowHeight = 58f;
         var rowGap = 12f;
@@ -1510,8 +1601,24 @@ public sealed class VocabularyShooterGame : MonoBehaviour
             var rect = new Rect(24f, startY + index * (rowHeight + rowGap), uiWidth - 48f, rowHeight);
             DrawLevelCard(rect, index);
         }
+        GUI.Label(new Rect(16f, uiHeight - 28f, uiWidth - 32f, 16f),
+            VersionDisplayText, CreateFittedSmallStyle(VersionDisplayText, uiWidth - 32f));
     }
 
+    private void RegisterAdminLogoTap(float time)
+    {
+        if (adminLogoTapCount == 0 || time - adminFirstLogoTapTime > 2f)
+        {
+            adminFirstLogoTapTime = time;
+            adminLogoTapCount = 0;
+        }
+
+        adminLogoTapCount++;
+        if (adminLogoTapCount < 3) return;
+
+        adminLogoTapCount = 0;
+        SetAdminMode(!IsAdminMode);
+    }
     private void DrawLevelCard(Rect rect, int levelIndex)
     {
         var tint = WordShooterArt.PlanetColor(levelIndex);
@@ -1528,9 +1635,15 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private void DrawTopicSelection()
     {
         GUI.Label(new Rect(24f, uiHeight * 0.065f, uiWidth - 48f, 46f),
-            "CHOOSE A TOPIC", titleStyle);
-        GUI.Label(new Rect(28f, uiHeight * 0.13f, uiWidth - 56f, 28f),
-            currentLevel + "  •  " + PlanetEnglishName(selectedLevelIndex), bodyStyle);
+            "GALAXY MAP", titleStyle);
+        var mapStatus = IsAdminMode
+            ? currentLevel + "  •  ADMIN MODE  •  OPEN " + TopicIds.Length + "/" + TopicIds.Length
+                + "  •  COLORS " + UnlockedColorCount + "/" + ColorBonusPalette.Length
+            : currentLevel + "  •  OPEN " + UnlockedTopicCount + "/" + TopicIds.Length
+                + "  •  CHOICES " + TopicUnlockTokens + "  •  COLORS "
+                + UnlockedColorCount + "/" + ColorBonusPalette.Length;
+        GUI.Label(new Rect(28f, uiHeight * 0.13f, uiWidth - 56f, 24f),
+            mapStatus, CreateFittedSmallStyle(mapStatus, uiWidth - 56f));
 
         var viewport = TopicSelectionViewport;
         var contentWidth = viewport.width - 14f;
@@ -1559,11 +1672,17 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
     private void DrawTopicRows(float contentWidth, bool allowButtonClicks, float verticalOffset)
     {
+        var hasUnlockChoice = TopicUnlockTokens > 0;
         for (var index = 0; index < TopicIds.Length; index++)
         {
+            var topicIndex = AlphabeticalTopicIndices[index];
             var rect = new Rect(0f,
                 index * (TopicRowHeight + TopicRowGap) - verticalOffset, contentWidth, TopicRowHeight);
-            var tint = WordShooterArt.PlanetColor(selectedLevelIndex);
+            var unlocked = IsTopicUnlocked(topicIndex);
+            var completed = IsTopicComplete(topicIndex);
+            var tint = unlocked
+                ? WordShooterArt.PlanetColor(topicIndex % 4)
+                : new Color(0.22f, 0.32f, 0.43f);
             var clicked = false;
             if (allowButtonClicks)
             {
@@ -1574,14 +1693,32 @@ public sealed class VocabularyShooterGame : MonoBehaviour
                 DrawButtonBackground(rect, tint);
             }
 
-            if (clicked && TryStartTopic(TopicIds[index]))
+            if (index > 0)
+            {
+                var connector = new Rect(27f, rect.y - TopicRowGap - TopicRowHeight * 0.5f,
+                    2f, TopicRowHeight + TopicRowGap);
+                DrawPill(connector, unlocked ? new Color(0.3f, 0.75f, 0.9f, 0.55f)
+                    : new Color(0.3f, 0.4f, 0.5f, 0.35f));
+            }
+            var nodeCenter = new Vector2(28f, rect.center.y);
+            var nodeColor = unlocked ? WordShooterArt.PlanetColor(topicIndex % 4) : new Color(0.4f, 0.5f, 0.62f);
+            DrawGlow(nodeCenter, unlocked ? 27f : 20f,
+                new Color(nodeColor.r, nodeColor.g, nodeColor.b, unlocked ? 0.72f : 0.28f));
+            DrawTextureTinted(CenteredRect(nodeCenter, 22f), ringTexture,
+                new Color(nodeColor.r, nodeColor.g, nodeColor.b, unlocked ? 0.95f : 0.48f));
+
+            if (clicked && (unlocked || hasUnlockChoice) && TryStartTopic(TopicIds[topicIndex]))
             {
                 return;
             }
 
-            var topicName = TopicName(index);
-            var nameRect = new Rect(rect.x + 16f, rect.y + 5f, rect.width - 32f, rect.height - 10f);
+            var topicName = TopicName(topicIndex);
+            var nameRect = new Rect(rect.x + 52f, rect.y + 5f, rect.width - 126f, rect.height - 10f);
             GUI.Label(nameRect, topicName, CreateTopicNameStyle(topicName, nameRect.width));
+            var status = !unlocked ? hasUnlockChoice ? "CHOOSE" : "LOCKED"
+                : completed ? "CLEARED" : "OPEN";
+            var statusRect = new Rect(rect.xMax - 70f, rect.y + 5f, 66f, rect.height - 10f);
+            GUI.Label(statusRect, status, CreateFittedSmallStyle(status, statusRect.width));
         }
     }
 
@@ -1615,6 +1752,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         DrawHudLabel(TopicHudRect, TopicShortNames[TopicIndex(currentTopic)], TextAnchor.MiddleLeft);
         DrawHudLabel(ScoreHudRect, "SCORE " + score, TextAnchor.MiddleCenter);
         DrawHudLabel(GameplayHudLabelRect(2), RoundProgressText + " WORDS", TextAnchor.MiddleRight);
+        DrawColorBonusTimer();
 
         DrawHologramPanel(new Rect(20f, 65f, uiWidth - 40f, 100f));
         DrawMeaningPanel();
@@ -1631,6 +1769,15 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         if (wordsPaused) DrawPausedWordExamples();
     }
 
+    private void DrawColorBonusTimer()
+    {
+        if (colorBonusTimer <= 0f) return;
+        var track = new Rect(20f, 58f, uiWidth - 40f, 4f);
+        DrawPill(track, new Color(colorBonusColor.r, colorBonusColor.g, colorBonusColor.b, 0.22f));
+        DrawPill(new Rect(track.x, track.y, track.width * colorBonusTimer / ColorBonusDuration,
+            track.height), colorBonusColor);
+    }
+
     private void DrawHudLabel(Rect rect, string text, TextAnchor alignment)
     {
         GUI.Label(rect, text, CreateFittedHudStyle(text, alignment, rect.width));
@@ -1643,6 +1790,18 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         {
             style.fontSize--;
         }
+        return style;
+    }
+
+    private GUIStyle CreateFittedTitleStyle(string text, float width)
+    {
+        var style = new GUIStyle(titleStyle)
+        {
+            wordWrap = false,
+            clipping = TextClipping.Clip
+        };
+        while (style.fontSize > 9 && style.CalcSize(new GUIContent(text)).x > width - 4f)
+            style.fontSize--;
         return style;
     }
 
@@ -1863,6 +2022,13 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         var wordTint = WordTint(word.entry);
         var tint = Color.Lerp(WordTint(word.entry) * 0.28f, new Color(0.15f, 0.65f, 0.8f), word.hitFlash / 0.12f);
         var opacity = Mathf.SmoothStep(0f, 1f, word.age / 0.22f);
+        if (word.isColorBonus)
+        {
+            var pulse = 0.65f + Mathf.Sin(Time.time * 5f) * 0.2f;
+            DrawGlow(rect.center, 58f, new Color(1f, 0.54f, 0.18f, opacity * pulse * 0.55f));
+            DrawTextureTinted(CenteredRect(rect.center, 96f), ringTexture,
+                new Color(1f, 0.68f, 0.24f, opacity * pulse));
+        }
         var wingColor = new Color(wordTint.r * 0.55f, wordTint.g * 0.55f, wordTint.b * 0.55f, opacity);
         DrawPill(new Rect(rect.x - 4f * WordVisualScale, rect.y + 14f * WordVisualScale,
             9f * WordVisualScale, 6f * WordVisualScale), wingColor);
@@ -2244,7 +2410,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         foreach (var projectile in projectiles)
         {
             var point = projectile.position;
-            var tint = PlasmaColor(projectile.level);
+            var tint = projectile.color;
             var tier = Mathf.Clamp(projectile.level, 1, 5);
             var powerScale = ProjectilePowerScale(tier);
             var direction = projectile.velocity.normalized;
@@ -2285,7 +2451,11 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         var pivot = GunPosition;
         DrawStationDeck(pivot);
         DrawGunEnergy(pivot);
-        DrawGlow(pivot + new Vector2(0f, 25f), 115f, new Color(0.05f, 0.6f, 0.55f, 0.55f));
+        var weaponColor = ActiveWeaponColor;
+        var stationGlow = colorBonusTimer > 0f
+            ? new Color(weaponColor.r, weaponColor.g, weaponColor.b, 0.55f)
+            : new Color(0.05f, 0.6f, 0.55f, 0.55f);
+        DrawGlow(pivot + new Vector2(0f, 25f), 115f, stationGlow);
         var previousMatrix = GUI.matrix;
         var angle = Mathf.Atan2(aimDirection.x, -aimDirection.y) * Mathf.Rad2Deg;
         GUI.matrix = WordShooterArt.RotateAtPivot(previousMatrix, pivot, angle);
@@ -2293,14 +2463,18 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         var scale = BarrelLength / 190f;
         var width = gunTexture.width * scale * 1.2f;
         var armor = new Color(0.04f, 0.13f, 0.22f, 0.95f);
-        var armorGlow = PlasmaColor(PlasmaLevel);
+        var armorGlow = weaponColor;
         armorGlow.a = 0.9f;
         DrawPill(new Rect(pivot.x - width * 0.66f, pivot.y - 1f, width * 0.3f, 21f), armor);
         DrawPill(new Rect(pivot.x + width * 0.36f, pivot.y - 1f, width * 0.3f, 21f), armor);
         DrawPill(new Rect(pivot.x - width * 0.55f, pivot.y + 2f, 2f, 14f), armorGlow);
         DrawPill(new Rect(pivot.x + width * 0.53f, pivot.y + 2f, 2f, 14f), armorGlow);
+        var previousColor = GUI.color;
+        if (colorBonusTimer > 0f)
+            GUI.color = Color.Lerp(Color.white, colorBonusColor, 0.55f);
         GUI.DrawTexture(new Rect(pivot.x - width / 2f, pivot.y - BarrelLength,
             width, gunTexture.height * scale), gunTexture);
+        GUI.color = previousColor;
         if (muzzleFlash > 0f) DrawMuzzleFlash(pivot);
         GUI.matrix = previousMatrix;
         GUI.Label(new Rect(pivot.x - 26f, pivot.y - BarrelLength - 22f, 52f, 16f),
@@ -2320,7 +2494,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
     private void DrawGunEnergy(Vector2 pivot)
     {
-        var tint = PlasmaColor(PlasmaLevel);
+        var tint = ActiveWeaponColor;
         var pulse = 0.5f + Mathf.Sin(Time.time * (4f + PlasmaLevel)) * 0.5f;
         DrawGlow(pivot, 58f + PlasmaLevel * 14f + pulse * 8f,
             new Color(tint.r, tint.g, tint.b, 0.24f + PlasmaLevel * 0.08f));
@@ -2347,16 +2521,17 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private void DrawStationDeck(Vector2 pivot)
     {
         DrawPill(new Rect(pivot.x - 48f, pivot.y + 13f, 96f, 19f), new Color(0.08f, 0.15f, 0.26f));
-        DrawPill(new Rect(pivot.x - 38f, pivot.y + 25f, 76f, 3f), WordShooterArt.Plasma);
+        var tint = colorBonusTimer > 0f ? colorBonusColor : WordShooterArt.Plasma;
+        DrawPill(new Rect(pivot.x - 38f, pivot.y + 25f, 76f, 3f), tint);
         for (var index = 0; index < 5; index++)
             DrawRectangle(new Rect(pivot.x - 26f + index * 12f, pivot.y + 17f, 5f, 3f),
-                new Color(0.3f, 0.8f, 1f, 0.7f));
+                new Color(tint.r, tint.g, tint.b, 0.7f));
     }
 
     private void DrawMuzzleFlash(Vector2 pivot)
     {
         var strength = muzzleFlash / 0.09f;
-        var tint = PlasmaColor(PlasmaLevel);
+        var tint = ActiveWeaponColor;
         var muzzle = pivot + Vector2.down * BarrelLength;
         DrawGlow(muzzle, 72f + PlasmaLevel * 12f, new Color(tint.r, tint.g, tint.b, strength));
         DrawTextureTinted(CenteredRect(muzzle, 16f + (1f - strength) * 42f), ringTexture,
@@ -2439,8 +2614,9 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private void DrawResult()
     {
         DrawResultFireworks();
-        GUI.Label(new Rect(25f, uiHeight * 0.09f, uiWidth - 50f, 58f),
-            "ROUND COMPLETE  •  " + currentLevel, titleStyle);
+        var title = "ROUND COMPLETE  •  " + currentLevel;
+        var titleRect = new Rect(25f, uiHeight * 0.09f, uiWidth - 50f, 58f);
+        GUI.Label(titleRect, title, CreateFittedTitleStyle(title, titleRect.width));
         var panel = new Rect(24f, uiHeight * 0.18f, uiWidth - 48f, uiHeight * 0.49f);
         DrawHologramPanel(panel);
         GUI.Label(new Rect(38f, panel.y + 8f, uiWidth - 76f, 36f), "SCORE  " + score, titleStyle);
@@ -2449,10 +2625,24 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         GUI.Label(new Rect(38f, panel.y + 68f, uiWidth - 76f, 26f),
             "Words destroyed: " + destroyedCount + "/" + CurrentWordPool.Length, bodyStyle);
         GUI.Label(new Rect(38f, panel.y + 96f, uiWidth - 76f, 26f),
+            "EXPERIENCE +" + roundExperienceEarned + "  •  RANK " + PlayerRank, smallStyle);
+        var dailyWords = Mathf.Min(GetDailyTopicWordCount(currentTopic), DailyExperienceTierSize * DailyExperienceMultipliers.Length);
+        var dailyRate = Mathf.RoundToInt(GetDailyExperienceMultiplier(currentTopic) * 100f);
+        GUI.Label(new Rect(38f, panel.y + 122f, uiWidth - 76f, 24f),
+            "TODAY " + dailyWords + "/200 WORDS  •  XP " + dailyRate + "%", smallStyle);
+        GUI.Label(new Rect(38f, panel.y + 148f, uiWidth - 76f, 26f),
             newRecord ? "NEW PERSONAL BEST!" : "Personal best: " + bestScore, smallStyle);
-        GUI.Label(new Rect(38f, panel.y + 124f, uiWidth - 76f, 26f),
+        GUI.Label(new Rect(38f, panel.y + 176f, uiWidth - 76f, 26f),
             missedWords.Count == 0 ? "No missed words. Great work!" : "MISSED WORDS  •  Tap to listen", smallStyle);
-        DrawMissedWordReview(new Rect(panel.x + 16f, panel.y + 152f, panel.width - 32f, panel.height - 164f));
+        var reviewTop = 204f;
+        if (!string.IsNullOrEmpty(roundUnlockMessage))
+        {
+            GUI.Label(new Rect(38f, panel.y + reviewTop, uiWidth - 76f, 24f),
+                roundUnlockMessage, CreateFittedSmallStyle(roundUnlockMessage, uiWidth - 76f));
+            reviewTop += 28f;
+        }
+        DrawMissedWordReview(new Rect(panel.x + 16f, panel.y + reviewTop,
+            panel.width - 32f, panel.height - reviewTop - 12f));
 
         var buttonY = uiHeight * 0.705f;
         if (DrawButton(new Rect(40f, buttonY, uiWidth - 80f, 54f), "Play Again  •  " + currentLevel, Color32(42, 143, 112)))
@@ -2465,6 +2655,14 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
     private bool TryStartTopic(string topic)
     {
+        var topicIndex = TopicIndex(topic);
+        if (!IsTopicUnlocked(topicIndex))
+        {
+            if (TopicUnlockTokens <= 0) return false;
+            SetTopicUnlocked(topicIndex, true);
+            PlayerPrefs.SetInt(TopicUnlockTokenKey, TopicUnlockTokens - 1);
+            PlayerPrefs.Save();
+        }
         currentTopic = topic;
         StartTopicRound(currentLevel, topic);
         return true;
@@ -2546,6 +2744,264 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         return "WordGalaxy.BestScore." + level + "." + topic;
     }
 
+    private static string TopicCompletionKey(int topicIndex)
+    {
+        return CompletedTopicKeyPrefix + TopicIds[topicIndex];
+    }
+
+    private static string TopicUnlockKey(int topicIndex)
+    {
+        return TopicUnlockKeyPrefix + TopicIds[topicIndex];
+    }
+
+    private static string AdminUnlockBackupKey(int topicIndex)
+    {
+        return AdminUnlockBackupKeyPrefix + TopicIds[topicIndex];
+    }
+
+    private static string TopicChoiceAwardedKey(int topicIndex)
+    {
+        return TopicChoiceAwardedKeyPrefix + TopicIds[topicIndex];
+    }
+
+    private static bool IsTopicComplete(int topicIndex)
+    {
+        return PlayerPrefs.GetInt(TopicCompletionKey(topicIndex), 0) != 0;
+    }
+
+    private static void SetTopicUnlocked(int topicIndex, bool unlocked)
+    {
+        PlayerPrefs.SetInt(TopicUnlockKey(topicIndex), unlocked ? 1 : 0);
+    }
+
+    private static void SetAdminMode(bool enabled)
+    {
+        EnsureUserTopicFlagsMigration();
+        PlayerPrefs.SetInt(AdminModeKey, enabled ? 1 : 0);
+        PlayerPrefs.Save();
+    }
+
+    private static void EnsureUserModeAtStartup()
+    {
+        PlayerPrefs.SetInt(AdminModeKey, 0);
+        EnsureUserTopicFlagsMigration();
+        PlayerPrefs.Save();
+    }
+
+    public static void UnlockAllTopicsForTesting()
+    {
+        SetAdminMode(true);
+    }
+
+    private static void EnsureTopicUnlockMigration()
+    {
+        const string migrationKey = "WordGalaxy.TopicUnlockMigration";
+        if (PlayerPrefs.GetInt(migrationKey, 0) != 0) return;
+
+        var legacyHighestIndex = PlayerPrefs.GetInt(LegacyUnlockedTopicIndexKey, -1);
+        for (var topicIndex = 0; topicIndex < TopicIds.Length; topicIndex++)
+        {
+            var completed = IsTopicComplete(topicIndex);
+            for (var levelIndex = 0; !completed && levelIndex < LevelIds.Length; levelIndex++)
+                completed = PlayerPrefs.GetInt(BestScoreKey(LevelIds[levelIndex], TopicIds[topicIndex]), 0) > 0;
+            if (completed) PlayerPrefs.SetInt(TopicCompletionKey(topicIndex), 1);
+            if (topicIndex == 0 || topicIndex <= legacyHighestIndex || completed)
+                SetTopicUnlocked(topicIndex, true);
+        }
+
+        PlayerPrefs.SetInt(migrationKey, 1);
+        PlayerPrefs.Save();
+    }
+
+    private static void EnsureUserTopicFlagsMigration()
+    {
+        if (PlayerPrefs.GetInt(UserTopicFlagsMigrationKey, 0) >= UserTopicFlagsMigrationVersion) return;
+        EnsureTopicUnlockMigration();
+
+        var hasLegacySnapshot = PlayerPrefs.GetInt(AdminUnlockBackupValidKey, 0) != 0;
+        var userUnlocks = new bool[TopicIds.Length];
+        var unlockedCount = 0;
+        for (var topicIndex = 0; topicIndex < TopicIds.Length; topicIndex++)
+        {
+            userUnlocks[topicIndex] = hasLegacySnapshot
+                ? PlayerPrefs.GetInt(AdminUnlockBackupKey(topicIndex), 0) != 0
+                : PlayerPrefs.GetInt(TopicUnlockKey(topicIndex), topicIndex == 0 ? 1 : 0) != 0;
+            if (userUnlocks[topicIndex]) unlockedCount++;
+        }
+
+        var legacyHighestIndex = PlayerPrefs.GetInt(LegacyUnlockedTopicIndexKey, -1);
+        if (unlockedCount == TopicIds.Length && legacyHighestIndex >= 0
+            && legacyHighestIndex < TopicIds.Length - 1)
+        {
+            for (var topicIndex = 0; topicIndex < TopicIds.Length; topicIndex++)
+                userUnlocks[topicIndex] = topicIndex <= legacyHighestIndex;
+        }
+        else if (unlockedCount == TopicIds.Length && GetCompletedTopicCount() < TopicIds.Length - 1)
+        {
+            for (var topicIndex = 0; topicIndex < TopicIds.Length; topicIndex++)
+                userUnlocks[topicIndex] = topicIndex == 0 || IsTopicComplete(topicIndex);
+
+            unlockedCount = 0;
+            var awardedChoices = 0;
+            for (var topicIndex = 0; topicIndex < TopicIds.Length; topicIndex++)
+            {
+                if (userUnlocks[topicIndex]) unlockedCount++;
+                if (PlayerPrefs.GetInt(TopicChoiceAwardedKey(topicIndex), 0) != 0) awardedChoices++;
+            }
+            var expectedCount = Mathf.Clamp(
+                Mathf.Max(unlockedCount, 1 + awardedChoices - PlayerPrefs.GetInt(TopicUnlockTokenKey, 0)),
+                1, TopicIds.Length);
+            for (var orderIndex = 0; orderIndex < AlphabeticalTopicIndices.Length
+                && unlockedCount < expectedCount; orderIndex++)
+            {
+                var topicIndex = AlphabeticalTopicIndices[orderIndex];
+                if (userUnlocks[topicIndex]) continue;
+                userUnlocks[topicIndex] = true;
+                unlockedCount++;
+            }
+        }
+
+        for (var topicIndex = 0; topicIndex < TopicIds.Length; topicIndex++)
+        {
+            SetTopicUnlocked(topicIndex, userUnlocks[topicIndex]);
+            PlayerPrefs.DeleteKey(AdminUnlockBackupKey(topicIndex));
+        }
+        PlayerPrefs.DeleteKey(AdminUnlockBackupValidKey);
+        PlayerPrefs.SetInt(UserTopicFlagsMigrationKey, UserTopicFlagsMigrationVersion);
+        PlayerPrefs.Save();
+    }
+
+    private static void EnsureTopicChoiceAwardMigration()
+    {
+        EnsureTopicUnlockMigration();
+        if (PlayerPrefs.GetInt(TopicChoiceAwardMigrationKey, 0) != 0) return;
+
+        var unclaimedCompletions = 0;
+        for (var topicIndex = 0; topicIndex < TopicIds.Length; topicIndex++)
+        {
+            if (!IsTopicComplete(topicIndex)
+                || PlayerPrefs.GetInt(TopicChoiceAwardedKey(topicIndex), 0) != 0) continue;
+            PlayerPrefs.SetInt(TopicChoiceAwardedKey(topicIndex), 1);
+            unclaimedCompletions++;
+        }
+
+        var remainingTopics = TopicIds.Length - GetUnlockedTopicCount();
+        var currentTokens = PlayerPrefs.GetInt(TopicUnlockTokenKey, 0);
+        var migrationTokens = Mathf.Min(unclaimedCompletions, Mathf.Max(0, remainingTopics - currentTokens));
+        PlayerPrefs.SetInt(TopicUnlockTokenKey, currentTokens + migrationTokens);
+        PlayerPrefs.SetInt(TopicChoiceAwardMigrationKey, 1);
+        PlayerPrefs.Save();
+    }
+
+    private static bool IsTopicUnlocked(int topicIndex)
+    {
+        EnsureUserTopicFlagsMigration();
+        if (IsAdminMode) return true;
+        return PlayerPrefs.GetInt(TopicUnlockKey(topicIndex), topicIndex == 0 ? 1 : 0) != 0;
+    }
+
+    private static int GetUnlockedTopicCount()
+    {
+        EnsureUserTopicFlagsMigration();
+        if (IsAdminMode) return TopicIds.Length;
+        var count = 0;
+        for (var topicIndex = 0; topicIndex < TopicIds.Length; topicIndex++)
+            if (PlayerPrefs.GetInt(TopicUnlockKey(topicIndex), topicIndex == 0 ? 1 : 0) != 0) count++;
+        return count;
+    }
+
+    private static int GetCompletedTopicCount()
+    {
+        EnsureTopicUnlockMigration();
+        var count = 0;
+        for (var topicIndex = 0; topicIndex < TopicIds.Length; topicIndex++)
+            if (IsTopicComplete(topicIndex)) count++;
+        return count;
+    }
+
+    private void CompleteCurrentTopic()
+    {
+        if (IsAdminMode)
+        {
+            roundUnlockMessage = "ADMIN MODE  •  PROGRESS NOT SAVED";
+            return;
+        }
+        var topicIndex = TopicIndex(currentTopic);
+        EnsureTopicChoiceAwardMigration();
+        var previousColorCount = UnlockedColorCount;
+        var canUnlockAnotherTopic = GetUnlockedTopicCount() < TopicIds.Length;
+        PlayerPrefs.SetInt(TopicCompletionKey(topicIndex), 1);
+        if (PlayerPrefs.GetInt(TopicChoiceAwardedKey(topicIndex), 0) == 0)
+        {
+            PlayerPrefs.SetInt(TopicChoiceAwardedKey(topicIndex), 1);
+            if (canUnlockAnotherTopic)
+            {
+                PlayerPrefs.SetInt(TopicUnlockTokenKey, TopicUnlockTokens + 1);
+                roundUnlockMessage = "CHOOSE ANY NEW TOPIC";
+            }
+        }
+        if (UnlockedColorCount > previousColorCount)
+        {
+            roundUnlockMessage = string.IsNullOrEmpty(roundUnlockMessage)
+                ? "NEW SHIP COLOR"
+                : roundUnlockMessage + "  •  NEW SHIP COLOR";
+        }
+        PlayerPrefs.Save();
+    }
+
+    private static string DailyExperienceDateKey(string topic)
+    {
+        return "WordGalaxy.DailyExperienceDate." + topic;
+    }
+
+    private static string DailyExperienceWordCountKey(string topic)
+    {
+        return "WordGalaxy.DailyExperienceWords." + topic;
+    }
+
+    private static string TodayKey()
+    {
+        return DateTime.Now.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+    }
+
+    private static int GetDailyTopicWordCount(string topic)
+    {
+        return PlayerPrefs.GetString(DailyExperienceDateKey(topic), string.Empty) == TodayKey()
+            ? PlayerPrefs.GetInt(DailyExperienceWordCountKey(topic), 0)
+            : 0;
+    }
+
+    private static float ExperienceMultiplierForDailyWordCount(int destroyedWords)
+    {
+        var tier = destroyedWords / DailyExperienceTierSize;
+        return tier < DailyExperienceMultipliers.Length ? DailyExperienceMultipliers[tier] : 0f;
+    }
+
+    private static float GetDailyExperienceMultiplier(string topic)
+    {
+        return ExperienceMultiplierForDailyWordCount(GetDailyTopicWordCount(topic));
+    }
+
+    private int AwardExperienceForDestroyedWord()
+    {
+        if (IsAdminMode) return 0;
+        var today = TodayKey();
+        var dateKey = DailyExperienceDateKey(currentTopic);
+        var countKey = DailyExperienceWordCountKey(currentTopic);
+        var destroyedToday = PlayerPrefs.GetString(dateKey, string.Empty) == today
+            ? PlayerPrefs.GetInt(countKey, 0)
+            : 0;
+        var experience = Mathf.FloorToInt(ExperiencePerDestroyedWord
+            * ExperienceMultiplierForDailyWordCount(destroyedToday));
+        destroyedToday++;
+        PlayerPrefs.SetString(dateKey, today);
+        PlayerPrefs.SetInt(countKey, destroyedToday);
+        PlayerPrefs.SetInt("WordGalaxy.TotalExperience", TotalExperience + experience);
+        PlayerPrefs.Save();
+        roundExperienceEarned += experience;
+        return experience;
+    }
+
     private static int TopicIndex(string topic)
     {
         for (var index = 0; index < TopicIds.Length; index++)
@@ -2577,6 +3033,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         currentLevel = selectedLevel;
         currentTopic = selectedTopic;
         TopicIndex(currentTopic);
+        roundUnlockMessage = null;
         selectedLevelIndex = CurrentLevelIndex;
         LoadPronunciationsForCurrentPool();
         var topicBestKey = BestScoreKey(currentLevel, currentTopic);
@@ -2590,6 +3047,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         newRecord = false;
         score = 0;
         destroyedCount = 0;
+        roundExperienceEarned = 0;
         roundCompletedAt = 0f;
         lastHitWord = null;
         missedWords.Clear();
@@ -2608,6 +3066,8 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         reviewScrollPosition = Vector2.zero;
         muzzleFlash = 0f;
         upgradeTimer = 0f;
+        colorBonusTimer = 0f;
+        colorBonusColor = Color.white;
         shotCooldown = 0f;
         ResetShootingInput();
         spawnTimer = 0.05f;
@@ -2639,7 +3099,8 @@ public sealed class VocabularyShooterGame : MonoBehaviour
             previousY = 178f,
             speed = speed * UnityEngine.Random.Range(0.9f, 1.15f),
             maxHits = VocabularyTopicData.LetterCount(entry.word),
-            hitsRemaining = VocabularyTopicData.LetterCount(entry.word)
+            hitsRemaining = VocabularyTopicData.LetterCount(entry.word),
+            isColorBonus = UnityEngine.Random.value < ColorBonusSpawnChance
         });
     }
 
@@ -2651,6 +3112,21 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private WordEntry NextWord()
     {
         return wordBag.Dequeue();
+    }
+
+    private void ActivateColorBonus()
+    {
+        var previousColor = ActiveWeaponColor;
+        var paletteCount = UnlockedColorCount;
+        var startIndex = UnityEngine.Random.Range(0, paletteCount);
+        for (var offset = 0; offset < paletteCount; offset++)
+        {
+            var candidate = ColorBonusPalette[(startIndex + offset) % paletteCount];
+            if (candidate == previousColor) continue;
+            colorBonusColor = candidate;
+            break;
+        }
+        colorBonusTimer = ColorBonusDuration;
     }
 
     private void OnWordHit(FallingWord fallingWord, int damage)
@@ -2688,6 +3164,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
         fallingWords.Remove(fallingWord);
         QueuePronunciation(fallingWord.entry);
+        if (fallingWord.isColorBonus) ActivateColorBonus();
         var previousLevel = PlasmaLevel;
         score += 10;
         if (PlasmaLevel > previousLevel)
@@ -2696,6 +3173,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
             PlaySound(upgradeSound);
         }
         destroyedCount++;
+        AwardExperienceForDestroyedWord();
         explosions.Add(new WordExplosion
         {
             entry = fallingWord.entry,
@@ -2706,8 +3184,9 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private void EndRound()
     {
         roundCompletedAt = Time.time;
+        if (!IsAdminMode && destroyedCount == CurrentWordPool.Length) CompleteCurrentTopic();
         PlaySound(roundEndSound);
-        if (score > bestScore)
+        if (!IsAdminMode && score > bestScore)
         {
             bestScore = score;
             newRecord = true;
@@ -2723,6 +3202,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         shotPuffs.Clear();
         muzzleFlash = 0f;
         upgradeTimer = 0f;
+        colorBonusTimer = 0f;
         ResetShootingInput();
     }
 
