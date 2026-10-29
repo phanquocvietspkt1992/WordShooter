@@ -1,56 +1,42 @@
-# Chay WordShooter tren iPhone
+# Cài Word Galaxy lên iPhone
 
-Huong dan nay danh cho iPhone 17 Pro Max chay iOS 27, khong dung cap USB va khong can Apple Developer Program tra phi. Mac va iPhone can cung mang Wi-Fi.
+Hướng dẫn này dùng Unity `6000.6.7f1` và quy trình Xcode Build Profiles. Bản cài phát triển cần Mac, Xcode, Unity iOS Build Support và một Apple Account. Hướng dẫn không yêu cầu tài khoản Apple Developer trả phí.
 
-## 1. Kiem tra cong cu
+## 1. Chuẩn bị iPhone và Xcode
 
-- Unity Hub va project `WordShooter`.
-- Unity `6000.6.7f1` voi module **iOS Build Support**.
-- Xcode `27.1` va iOS SDK `27.1`.
-- Apple Account mien phi dang nhap trong Xcode.
+1. Cập nhật Xcode và iOS SDK để tương thích với phiên bản iOS trên iPhone.
+2. Bật Wi-Fi trên iPhone và kết nối iPhone cùng Mac vào một mạng nội bộ có cho phép các thiết bị tìm thấy nhau.
+3. Trong Xcode, mở **Xcode > Open Developer Tool > Device Hub**.
+4. Chọn **+ > Pair Nearby Device**, chọn iPhone và làm theo hướng dẫn. Bật **Developer Mode** trên iPhone nếu Xcode yêu cầu; sau khi iPhone khởi động lại, xác nhận bật chế độ này.
+5. Chờ iPhone xuất hiện trong Device Hub và danh sách thiết bị chạy của Xcode.
 
-Xcode tren may da duoc cai, nhung lan kiem tra gan nhat `xcode-select` van tro vao Command Line Tools. Trong Xcode, vao **Xcode > Settings > Locations > Command Line Tools** va chon **Xcode 27.1** truoc khi build.
+Mạng Wi-Fi quán cà phê, khách sạn và mạng khách có thể chặn Bonjour hoặc liên lạc trực tiếp giữa các thiết bị. Cùng tên Wi-Fi không đảm bảo hai máy có thể tìm thấy nhau. Nếu ghép nối không được, thử mạng riêng ở nhà hoặc ghép qua cáp USB trước.
 
-## 2. Ghep iPhone voi Xcode qua Wi-Fi
+## 2. Build project trong Unity
 
-1. Ket noi MacBook va iPhone vao cung mang Wi-Fi.
-2. Mo Xcode, chon **Xcode > Open Developer Tool > Device Hub**.
-3. Nhan **+ > Pair Nearby Device**, chon iPhone va lam theo huong dan tren man hinh.
-4. Chap nhan **Trust** tren iPhone neu duoc hoi. Neu iOS yeu cau, vao **Cai dat > Quyen rieng tu & Bao mat > Developer Mode**, bat len, khoi dong lai iPhone va xac nhan.
-5. Kiem tra iPhone xuat hien trong Device Hub va menu run destination cua Xcode.
+1. Mở thư mục project `WordShooter` trong Unity Hub bằng Unity `6000.6.7f1` có module **iOS Build Support**.
+2. Mở `Assets/Scenes/Prototype.unity`.
+3. Chọn **File > Build Profiles**, chọn **iOS**, rồi nhấn **Switch Platform** nếu cần.
+4. Trong **Player Settings**, đặt **Bundle Identifier** thành ID duy nhất, ví dụ `com.viet.wordgalaxy.dev`. Giữ hướng màn hình Portrait.
+5. Chọn **Build** và lưu Xcode project vào thư mục riêng, chẳng hạn `Desktop/WordShooter-iOS-Build`, ngoài `Assets`.
 
-## 3. Build project iOS trong Unity
+Scene `Prototype` đã được đăng ký trong Build Settings. UI và game controller được tạo khi ứng dụng chạy.
 
-1. Mo project `WordShooter` bang Unity `6000.6.7f1`.
-2. Mo scene `Assets/Scenes/Prototype.unity`.
-3. Vao **File > Build Profiles**, chon **iOS**, roi nhan **Switch Platform** neu nut nay hien ra.
-4. Mo **Player Settings**. Dat **Bundle Identifier** thanh mot ID duy nhat, vi du `com.viet.wordgalaxy.test`.
-5. Giu huong man hinh **Portrait**. Project bootstrap tu dong dat huong Portrait, nhung van co the kiem tra trong **Player > iOS > Resolution and Presentation > Default Orientation**.
-6. Trong Build Profiles, chon **Build** (khong can chon Build And Run). Luu vao thu muc trong rieng, vi du `Desktop/WordShooter-iOS-Build`, khong luu trong `Assets`.
-7. Cho Unity tao xong project Xcode.
+## 3. Ký và cài bằng Xcode
 
-Scene `Prototype` da duoc dang ky trong build settings cua project.
+1. Mở `Unity-iPhone.xcodeproj` vừa tạo.
+2. Chọn project **Unity-iPhone**, target **Unity-iPhone**, rồi mở **Signing & Capabilities**.
+3. Bật **Automatically manage signing** và chọn **Personal Team** của Apple Account. Nếu chưa có Team, đăng nhập trong **Xcode > Settings > Accounts**.
+4. Nếu Xcode báo Bundle Identifier đã được dùng, đổi sang ID khác.
+5. Chọn iPhone làm run destination và nhấn **Run** hoặc **Command+R**.
+6. Chấp nhận Trust hoặc Developer Mode trên iPhone nếu được yêu cầu.
 
-## 4. Ky va cai game bang Xcode
+Personal Team thường đủ để cài bản phát triển lên thiết bị cá nhân. Hồ sơ ký miễn phí có thời hạn ngắn và có thể cần build, cài lại sau khi hết hạn. TestFlight và phân phối App Store cần chương trình Apple Developer phù hợp.
 
-1. Mo `Unity-iPhone.xcodeproj` trong thu muc build vua tao.
-2. Trong Project Navigator, chon project `Unity-iPhone`; o muc **TARGETS**, chon `Unity-iPhone`.
-3. Mo **Signing & Capabilities**.
-4. Bat **Automatically manage signing** va chon **Personal Team** gan voi Apple Account mien phi. Neu chua co Team, dang nhap tai **Xcode > Settings > Accounts**.
-5. Neu Bundle Identifier bi trung, doi thanh ID khac.
-6. Tren thanh cong cu Xcode, chon iPhone 17 Pro Max lam run destination.
-7. Nhan **Run** hoac **Command+R**. Xcode se build, ky va cai ung dung len iPhone.
-8. Neu iPhone hien yeu cau Developer Mode hoac Trust, chap nhan theo huong dan tren may.
+## Xử lý sự cố
 
-## 5. Sau khi cai
-
-- Game chay truc tiep tren iPhone; co the tat MacBook sau khi cai xong.
-- Personal Team mien phi khong can phi dang ky, nhung ho so development het han sau khoang 7 ngay. Khi app khong mo duoc nua, can build va cai lai tu Xcode.
-- Moi lan cap nhat game, build lai va chay lai tu Xcode.
-
-## Xu ly nhanh
-
-- **iPhone khong hien trong Xcode:** kiem tra hai may cung Wi-Fi, mo Device Hub va pair lai; xac nhan Developer Mode neu duoc hoi.
-- **Xcode bao khong tim thay developer directory:** chon Xcode 27.1 trong **Xcode > Settings > Locations > Command Line Tools**.
-- **Signing error:** kiem tra Personal Team dang duoc chon va Bundle Identifier la duy nhat.
-- **Unity khong co iOS trong Build Profiles:** mo Unity Hub > Installs > Unity `6000.6.7f1` > Add modules va cai **iOS Build Support**.
+- **iPhone không xuất hiện trong Device Hub:** kiểm tra cả hai máy đang ở cùng mạng nội bộ, tắt VPN tạm thời, rồi thử khởi động lại Wi-Fi và Xcode.
+- **Cả hai ở cùng Wi-Fi nhưng không tìm thấy nhau:** hỏi quản trị mạng xem có bật client/AP isolation, mạng guest, chặn Bonjour hoặc lọc multicast không. Ping thành công chỉ xác nhận một phần kết nối IP, không xác nhận Xcode discovery.
+- **Không ghép được qua Wi-Fi:** ghép iPhone bằng cáp USB, xác nhận **Trust This Computer**, sau đó bật kết nối mạng cho thiết bị trong Xcode.
+- **Unity không có iOS trong Build Profiles:** trong Unity Hub, cài **iOS Build Support** cho Unity `6000.6.7f1`.
+- **Lỗi ký ứng dụng:** kiểm tra Personal Team, Bundle Identifier duy nhất và trạng thái Developer Mode trên iPhone.
