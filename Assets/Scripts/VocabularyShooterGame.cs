@@ -113,6 +113,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private const float BarrelLength = 44f;
     private const float KeyboardAimSpeed = 480f;
     private const float ExplosionDuration = 2.5f;
+    private const float ExplosionMeaningDuration = ExplosionDuration * 0.5f;
     private const float WordSwayFrequency = 1.8f;
     private const float WordSwaySpeedMultiplier = 0.4f;
     private const float PlasmaLevelSpeedStep = 0.08f;
@@ -2013,7 +2014,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     {
         return new GUIStyle(feedbackStyle)
         {
-            fontSize = WordLabelFontSize(entry.word, WordWidth - 8f * WordVisualScale),
+            fontSize = Mathf.Clamp(WordLabelFontSize(entry.word, WordWidth - 8f * WordVisualScale), 15, 18),
             wordWrap = true,
             alignment = TextAnchor.MiddleCenter,
             padding = new RectOffset(0, 0, 0, 0),
@@ -2023,17 +2024,18 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
     private Vector2 ExplosionMeaningTextSize(WordEntry entry)
     {
-        const float horizontalMargin = 12f;
-        const float verticalSafetyMargin = 16f;
-        var maximumWidth = Mathf.Max(1f, uiWidth - horizontalMargin * 2f);
+        const float panelPadding = 16f;
+        const float minimumTextWidth = 132f;
+        const float maximumPanelMargin = 20f;
+        const float topPadding = 12f;
+        const float bottomPadding = 12f;
+        var maximumTextWidth = Mathf.Max(1f, uiWidth - maximumPanelMargin * 2f - panelPadding * 2f);
         var labelStyle = CreateExplosionMeaningStyle(entry);
         var content = new GUIContent(entry.meaning);
-        // Measure using the same width that the label will receive. Measuring a
-        // narrower, single-line CalcSize result can underestimate wrapped text
-        // and clip the second or third line inside the label rectangle.
-        var layoutWidth = maximumWidth;
-        var textHeight = labelStyle.CalcHeight(content, layoutWidth);
-        return new Vector2(layoutWidth, textHeight + verticalSafetyMargin);
+        var naturalWidth = labelStyle.CalcSize(content).x;
+        var textWidth = Mathf.Min(maximumTextWidth, Mathf.Max(minimumTextWidth, naturalWidth));
+        var textHeight = labelStyle.CalcHeight(content, textWidth);
+        return new Vector2(textWidth + panelPadding * 2f, topPadding + textHeight + bottomPadding);
     }
 
     private void DrawExplosions()
@@ -2041,16 +2043,100 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         foreach (var explosion in explosions)
         {
             if (explosion.age < 0.65f) DrawExplosionBurst(explosion);
-            var textSize = ExplosionMeaningTextSize(explosion.entry);
+            if (explosion.age >= ExplosionMeaningDuration) continue;
+            var panelSize = ExplosionMeaningTextSize(explosion.entry);
             var meaningStyle = CreateExplosionMeaningStyle(explosion.entry);
-            var x = Mathf.Clamp(explosion.position.x - textSize.x * 0.5f,
-                12f, Mathf.Max(12f, uiWidth - textSize.x - 12f));
-            var y = Mathf.Clamp(explosion.position.y - textSize.y - 16f - explosion.age * 6f,
-                178f, Mathf.Max(178f, uiHeight - textSize.y - 12f));
+            var x = Mathf.Clamp(explosion.position.x - panelSize.x * 0.5f,
+                12f, Mathf.Max(12f, uiWidth - panelSize.x - 12f));
+            var y = Mathf.Clamp(explosion.position.y - panelSize.y - 16f - explosion.age * 6f,
+                178f, Mathf.Max(178f, uiHeight - panelSize.y - 12f));
+            var reveal = Mathf.SmoothStep(0f, 1f, explosion.age / 0.2f);
+            var fadeOut = Mathf.Clamp01((ExplosionMeaningDuration - explosion.age) / 0.55f);
+            var opacity = reveal * fadeOut;
+            var scale = Mathf.Lerp(0.76f, 1f, reveal);
+            meaningStyle.fontSize = Mathf.Max(1, Mathf.RoundToInt(meaningStyle.fontSize * scale));
+            var panel = new Rect(x, y, panelSize.x, panelSize.y);
+            var center = panel.center;
+            panel.width *= scale;
+            panel.height *= scale;
+            panel.center = center;
+
+            DrawExplosionMeaningFrame(panel, explosion.age, opacity);
+
             var previousColor = GUI.color;
-            GUI.color = new Color(1f, 1f, 1f, Mathf.Clamp01((ExplosionDuration - explosion.age) / 0.5f));
-            GUI.Label(new Rect(x, y, textSize.x, textSize.y), explosion.entry.meaning, meaningStyle);
+            GUI.color = new Color(1f, 1f, 1f, opacity);
+            GUI.Label(new Rect(panel.x + 12f, panel.y + 8f, panel.width - 24f, panel.height - 16f),
+                explosion.entry.meaning, meaningStyle);
             GUI.color = previousColor;
+        }
+    }
+
+    private void DrawExplosionMeaningFrame(Rect panel, float age, float opacity)
+    {
+        var pulse = 0.72f + Mathf.Sin(age * 8f) * 0.12f;
+        DrawGlow(panel.center, panel.width * 1.05f,
+            new Color(0.12f, 0.72f, 1f, opacity * 0.24f * pulse));
+        DrawTextureTinted(panel, wordCardTexture, new Color(0.025f, 0.07f, 0.15f, opacity * 0.32f));
+
+        var edge = new Color(0.22f, 0.84f, 1f, opacity * 0.62f * pulse);
+        var brightEdge = new Color(0.73f, 0.98f, 1f, opacity * 0.95f);
+        const float cornerRadius = 12f;
+        DrawPill(new Rect(panel.x + cornerRadius, panel.y + 1f,
+            panel.width - cornerRadius * 2f, 1.5f), brightEdge);
+        DrawPill(new Rect(panel.x + cornerRadius, panel.yMax - 2.5f,
+            panel.width - cornerRadius * 2f, 1.5f), edge);
+        DrawPill(new Rect(panel.x + 1f, panel.y + cornerRadius,
+            1.5f, panel.height - cornerRadius * 2f), edge);
+        DrawPill(new Rect(panel.xMax - 2.5f, panel.y + cornerRadius,
+            1.5f, panel.height - cornerRadius * 2f), edge);
+        DrawExplosionMeaningCorner(panel, cornerRadius, 180f, 270f, brightEdge);
+        DrawExplosionMeaningCorner(panel, cornerRadius, 270f, 360f, brightEdge);
+        DrawExplosionMeaningCorner(panel, cornerRadius, 0f, 90f, edge);
+        DrawExplosionMeaningCorner(panel, cornerRadius, 90f, 180f, edge);
+
+        var scanY = panel.y + 8f + Mathf.Repeat(age * 0.55f, 1f) * Mathf.Max(1f, panel.height - 16f);
+        DrawRectangle(new Rect(panel.x + 10f, scanY, panel.width - 20f, 1f),
+            new Color(0.55f, 0.96f, 1f, opacity * 0.11f));
+
+        var perimeter = 2f * (panel.width + panel.height);
+        for (var index = 0; index < 3; index++)
+        {
+            var distance = Mathf.Repeat(age * 26f + index * perimeter / 3f, perimeter);
+            Vector2 point;
+            if (distance < panel.width)
+                point = new Vector2(panel.x + distance, panel.y);
+            else if ((distance -= panel.width) < panel.height)
+                point = new Vector2(panel.xMax, panel.y + distance);
+            else if ((distance -= panel.height) < panel.width)
+                point = new Vector2(panel.xMax - distance, panel.yMax);
+            else
+            {
+                distance -= panel.width;
+                point = new Vector2(panel.x, panel.yMax - distance);
+            }
+
+            DrawGlow(point, 15f, new Color(0.2f, 0.85f, 1f, opacity * 0.8f));
+            DrawRectangle(new Rect(point.x - 1f, point.y - 1f, 2f, 2f),
+                new Color(0.9f, 1f, 1f, opacity));
+        }
+    }
+
+    private static void DrawExplosionMeaningCorner(Rect panel, float radius,
+        float startAngle, float endAngle, Color color)
+    {
+        const int segments = 8;
+        var center = new Vector2(
+            startAngle >= 270f || endAngle <= 90f ? panel.xMax - radius : panel.x + radius,
+            startAngle >= 180f ? panel.y + radius : panel.yMax - radius);
+        var previous = center + new Vector2(Mathf.Cos(startAngle * Mathf.Deg2Rad),
+            Mathf.Sin(startAngle * Mathf.Deg2Rad)) * radius;
+        for (var index = 1; index <= segments; index++)
+        {
+            var angle = Mathf.Lerp(startAngle, endAngle, index / (float)segments) * Mathf.Deg2Rad;
+            var point = center + new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * radius;
+            var segment = point - previous;
+            DrawStreak((point + previous) * 0.5f, segment.normalized, segment.magnitude + 0.5f, 2f, color);
+            previous = point;
         }
     }
 
