@@ -1,0 +1,5 @@
+Offline English pronunciation for Word Galaxy.
+Generated locally using macOS text-to-speech, Samantha (en_US), 145 words/minute.
+WAV: mono, 22050 Hz, signed 16-bit PCM.
+Clips cover vocabulary in all 39 topics and four CEFR levels. Each clip contains only its matching English term; duplicate terms share a single audio asset.
+No network service, runtime speech engine, or downloaded recording is used.

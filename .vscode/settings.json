@@ -1,0 +1,16 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^test -x /Applications/Unity/Hub/Editor/6000\\.0\\.85f1/Unity\\.app/Contents/MacOS/Unity && echo UNITY_FOUND \\|\\| echo UNITY_NOT_FOUND; git -C /Users/viet/Desktop/Projects/microservices/BankSystemMicroservices rev-parse --show-toplevel; git -C /Users/viet/Desktop/Projects/microservices/BankSystemMicroservices status --short -- src/WordShooter$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ls -1 /Applications/Unity/Hub/Editor 2>/dev/null; uname -m; git -C /Users/viet/Desktop/Projects/microservices/BankSystemMicroservices status --short; git -C /Users/viet/Desktop/Projects/microservices/BankSystemMicroservices diff --check$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ls -la /Users/viet/Desktop/Projects/microservices/BankSystemMicroservices/src/WordShooter \\| head -40; command -v Unity \\|\\| command -v unity \\|\\| true$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

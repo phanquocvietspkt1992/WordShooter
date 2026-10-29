@@ -1,0 +1,15 @@
+Tower Defence Basic Towers
+Author: Nido
+Source: https://opengameart.org/content/tower-defence-basic-towers
+Download: https://opengameart.org/sites/default/files/td_basic_towers_0.zip
+License: CC0 1.0 Universal (public domain dedication)
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Retrieved: 2026-10-24
+
+Included files, unchanged from the source archive:
+- Cannon.png (PNG/Cannon.png)
+- Tower.png (PNG/Tower.png)
+
+These images are used for the rotating red single-barrel cannon and its
+stationary metal base. No attribution is required under CC0; this notice
+records the asset provenance.
