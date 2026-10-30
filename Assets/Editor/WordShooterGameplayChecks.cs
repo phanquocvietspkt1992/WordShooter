@@ -19,7 +19,9 @@ public static class WordShooterGameplayChecks
         RunCase(CheckShooting);
         RunCase(CheckTouchControls);
         RunCase(CheckGunPausesFallingWords);
+        RunCase(CheckApplicationInterruptions);
         RunCase(CheckBackNavigation);
+        RunCase(CheckStyleCaching);
         RunCase(CheckGunVolumeControlLayout);
         RunCase(CheckCompactControls);
         RunCase(CheckSingleGunOrigin);
@@ -85,6 +87,40 @@ public static class WordShooterGameplayChecks
         RunCase(CheckAdminLogoUnlockGesture);
         RunCase(CheckAdminStartupDefaultsToUser);
         Debug.Log("WordShooter Admin mode checks passed: " + passed);
+    }
+
+    [MenuItem("Word Shooter/Run Mobile Stability Checks")]
+    public static void RunMobileStabilityChecks()
+    {
+        if (EditorApplication.isPlaying) throw new InvalidOperationException("Stop Play mode before running checks.");
+        passed = 0;
+        Require((int)PlayerSettings.Android.targetSdkVersion == 36,
+            "Android builds explicitly target API 36");
+        Require(PlayerSettings.Android.targetArchitectures == AndroidArchitecture.ARM64,
+            "Android builds retain ARM64");
+        Require(PlayerSettings.GetScriptingBackend(UnityEditor.Build.NamedBuildTarget.Android)
+                == ScriptingImplementation.IL2CPP
+            && PlayerSettings.GetScriptingBackend(UnityEditor.Build.NamedBuildTarget.iOS)
+                == ScriptingImplementation.IL2CPP,
+            "Mobile builds explicitly use IL2CPP");
+        CheckBallistics();
+        RunCase(CheckApplicationInterruptions);
+        RunCase(CheckBackNavigation);
+        RunCase(CheckStyleCaching);
+        RunCase(CheckCompactControls);
+        RunCase(CheckGunPausesFallingWords);
+        RunCase(CheckGunVolumeControlLayout);
+        RunCase(CheckGameplayHudLayout);
+        RunCase(CheckResultTitleFits);
+        RunCase(CheckSafeAreaCoordinates);
+        RunCase(CheckTouchControls);
+        RunCase(CheckExitRound);
+        RunCase(CheckRoundReset);
+        RunCase(CheckPronunciationReset);
+        RunCase(CheckAdminTopicUnlocks);
+        RunCase(CheckAdminLogoUnlockGesture);
+        RunCase(CheckAdminStartupDefaultsToUser);
+        Debug.Log("WordShooter mobile stability checks passed: " + passed);
     }
 
     [MenuItem("Word Shooter/Admin/Unlock All Topics")]
@@ -348,9 +384,9 @@ public static class WordShooterGameplayChecks
                 "Lifetime XP persists and advances the character rank");
 
             PlayerPrefs.SetString(homeDateKey, today);
-            PlayerPrefs.SetInt(homeCountKey, 75);
+            PlayerPrefs.SetInt(homeCountKey, 125);
             Set(game, "currentTopic", "home");
-            Require((int)CallStatic("GetDailyTopicWordCount", "home") == 75
+            Require((int)CallStatic("GetDailyTopicWordCount", "home") == 125
                 && Mathf.Approximately((float)CallStatic("GetDailyExperienceMultiplier", "home"), 0.3f),
                 "Daily diminishing XP is tracked independently for each topic");
         }
@@ -720,7 +756,7 @@ public static class WordShooterGameplayChecks
         var topics = VocabularyTopicData.Topics;
         var getTopicName = typeof(VocabularyShooterGame).GetMethod("TopicName",
             BindingFlags.Static | BindingFlags.NonPublic);
-        Call(game, "PrepareStyles");
+        PrepareStylesForChecks(game);
         var rowHeight = (float)typeof(VocabularyShooterGame).GetField("TopicRowHeight",
             BindingFlags.Static | BindingFlags.NonPublic).GetRawConstantValue();
         var rowGap = (float)typeof(VocabularyShooterGame).GetField("TopicRowGap",
@@ -1118,7 +1154,7 @@ public static class WordShooterGameplayChecks
 
     private static void RunCase(Action<VocabularyShooterGame> check)
     {
-        var progressionKeys = new[]
+        var progressionKeyList = new List<string>
         {
             "WordGalaxy.UnlockedTopicIndex",
             "WordGalaxy.TopicUnlockTokens",
@@ -1126,8 +1162,25 @@ public static class WordShooterGameplayChecks
             "WordGalaxy.TopicChoiceAwardMigration",
             "WordGalaxy.UserTopicFlagsMigration",
             "WordGalaxy.AdminModeEnabled",
-            "WordGalaxy.AdminUserUnlockBackupValid"
+            "WordGalaxy.AdminUserUnlockBackupValid",
+            "WordGalaxy.TotalExperience"
         };
+        var dateKeys = new string[VocabularyTopicData.Topics.Length];
+        var hadDates = new bool[dateKeys.Length];
+        var oldDates = new string[dateKeys.Length];
+        foreach (var level in new[] { "A1", "A2", "B1", "B2" })
+            progressionKeyList.Add("WordGalaxy.BestScore." + level);
+        for (var index = 0; index < dateKeys.Length; index++)
+        {
+            var topic = VocabularyTopicData.Topics[index].Id;
+            dateKeys[index] = "WordGalaxy.DailyExperienceDate." + topic;
+            hadDates[index] = PlayerPrefs.HasKey(dateKeys[index]);
+            oldDates[index] = PlayerPrefs.GetString(dateKeys[index], string.Empty);
+            progressionKeyList.Add("WordGalaxy.DailyExperienceWords." + topic);
+            foreach (var level in new[] { "A1", "A2", "B1", "B2" })
+                progressionKeyList.Add("WordGalaxy.BestScore." + level + "." + topic);
+        }
+        var progressionKeys = progressionKeyList.ToArray();
         var hadProgressionKeys = new bool[progressionKeys.Length];
         var oldProgressionValues = new int[progressionKeys.Length];
         for (var index = 0; index < progressionKeys.Length; index++)
@@ -1186,6 +1239,11 @@ public static class WordShooterGameplayChecks
         }
         finally
         {
+            for (var index = 0; index < dateKeys.Length; index++)
+            {
+                if (hadDates[index]) PlayerPrefs.SetString(dateKeys[index], oldDates[index]);
+                else PlayerPrefs.DeleteKey(dateKeys[index]);
+            }
             for (var index = 0; index < progressionKeys.Length; index++)
             {
                 if (hadProgressionKeys[index])
@@ -1313,17 +1371,175 @@ public static class WordShooterGameplayChecks
         Call(game, "NavigateBack");
         Require(Get<bool>(game, "confirmingExit"),
             "Swiping back during gameplay asks for exit confirmation");
-        Set(game, "confirmingExit", false);
+        var target = Spawn(game, 132f, 300f);
+        var initialY = Get<float>(target, "y");
+        Call(game, "TryFire");
+        Call(game, "AdvanceGameplay", 0.5f);
+        Require(Get<IList>(game, "projectiles").Count == 0
+            && Get<float>(target, "y") == initialY,
+            "Exit confirmation blocks shooting and gameplay");
+        Call(game, "NavigateBack");
+        Require(!Get<bool>(game, "confirmingExit")
+            && Get<object>(game, "screenState").ToString() == "Playing",
+            "A second Back dismisses confirmation without exiting");
+        Call(game, "SetWordsPaused", true);
+        Call(game, "NavigateBack");
+        Call(game, "NavigateBack");
+        Require(Get<bool>(game, "wordsPaused"),
+            "Dismissing exit confirmation preserves a previously paused round");
+        Call(game, "SetWordsPaused", false);
 
         Set(game, "screenState", Enum.Parse(typeof(VocabularyShooterGame).GetNestedType(
             "ScreenState", BindingFlags.NonPublic), "Result"));
+        Set(game, "aimFingerId", 7);
+        Set(game, "topicTouchFingerId", 8);
+        Set(game, "backSwipeFingerId", 9);
         Call(game, "NavigateBack");
         Require(Get<object>(game, "screenState").ToString() == "TopicSelection",
             "Swiping back from results returns to topic selection");
+        Require(Get<int>(game, "aimFingerId") == -1
+            && Get<int>(game, "topicTouchFingerId") == -1
+            && Get<int>(game, "backSwipeFingerId") == -1,
+            "Back clears all active touch gestures");
 
         Call(game, "NavigateBack");
         Require(Get<object>(game, "screenState").ToString() == "Menu",
             "Swiping back from topic selection returns to the main menu");
+        Call(game, "NavigateBack");
+        Require(Get<object>(game, "screenState").ToString() == "Menu",
+            "Back at the root keeps the main menu open");
+    }
+
+    private static void CheckApplicationInterruptions(VocabularyShooterGame game)
+    {
+        var target = Spawn(game, 132f, 300f);
+        var initialY = Get<float>(target, "y");
+        Call(game, "TryFire");
+        var shots = Get<IList>(game, "projectiles");
+        var shotPosition = Get<Vector2>(shots[0], "position");
+        Set(game, "aimFingerId", 7);
+        Set(game, "topicTouchFingerId", 8);
+        Set(game, "backSwipeFingerId", 9);
+        Set(game, "adminLogoTapCount", 2);
+
+        Call(game, "OnApplicationFocus", false);
+        Require(Get<bool>(game, "wordsPaused") && Get<bool>(game, "applicationInterrupted"),
+            "Losing focus pauses an active round");
+        Require(Get<int>(game, "aimFingerId") == -1
+            && Get<int>(game, "topicTouchFingerId") == -1
+            && Get<int>(game, "backSwipeFingerId") == -1
+            && Get<int>(game, "adminLogoTapCount") == 0,
+            "An interruption clears touch gestures and partial admin taps");
+        Set(game, "shotCooldown", 0f);
+        Call(game, "TryFire");
+        Call(game, "AdvanceGameplay", 0.5f);
+        Require(shots.Count == 1 && Get<Vector2>(shots[0], "position") == shotPosition
+            && Get<float>(target, "y") == initialY,
+            "An interrupted round freezes words, projectiles, and firing");
+
+        Call(game, "OnApplicationPause", true);
+        Call(game, "OnApplicationFocus", true);
+        Require(Get<bool>(game, "applicationInterrupted"),
+            "Regaining focus cannot override an outstanding OS pause");
+        Call(game, "OnApplicationPause", false);
+        Require(!Get<bool>(game, "applicationInterrupted") && Get<bool>(game, "wordsPaused"),
+            "Returning to the app requires an explicit gameplay resume");
+        Call(game, "SetWordsPaused", false);
+        Call(game, "AdvanceGameplay", 0.1f);
+        Require(Get<float>(target, "y") > initialY,
+            "Gameplay advances after the player explicitly resumes");
+
+        Call(game, "OnApplicationPause", true);
+        Call(game, "OnApplicationFocus", false);
+        Call(game, "OnApplicationPause", false);
+        Require(Get<bool>(game, "applicationInterrupted"),
+            "An OS resume cannot override an outstanding focus loss");
+        Call(game, "OnApplicationFocus", true);
+        Require(Get<bool>(game, "wordsPaused"),
+            "Both lifecycle callback orders preserve the manual pause");
+
+        Call(game, "ExitRoundToTopicSelection");
+        Call(game, "NavigateBack");
+        Call(game, "OnApplicationPause", true);
+        Require(!Get<bool>(game, "wordsPaused") && Get<bool>(game, "applicationInterrupted"),
+            "Interrupting a menu does not create a gameplay pause");
+        var queue = Get<Queue<AudioClip>>(game, "pronunciationQueue");
+        var clip = Get<Dictionary<string, AudioClip>>(game, "pronunciations");
+        Require(clip.Count == 0, "Exiting a round clears the active pronunciation lookup");
+        queue.Enqueue(Get<AudioClip>(game, "tapSound"));
+        Call(game, "UpdatePronunciation");
+        Require(queue.Count == 1, "An interrupted menu cannot advance pronunciation playback");
+        Call(game, "ResetPronunciation");
+        Call(game, "OnApplicationPause", false);
+        Require(!Get<bool>(game, "wordsPaused") && !Get<bool>(game, "applicationInterrupted"),
+            "Menus recover after an interruption");
+
+        Call(game, "StartRound", "A1");
+        Call(game, "SetWordsPaused", true);
+        Call(game, "OnApplicationFocus", false);
+        Call(game, "OnApplicationFocus", true);
+        Require(Get<bool>(game, "wordsPaused"), "An already paused round stays paused after focus changes");
+        Call(game, "NavigateBack");
+        Call(game, "OnApplicationPause", true);
+        Call(game, "OnApplicationPause", false);
+        Call(game, "NavigateBack");
+        Require(!Get<bool>(game, "confirmingExit") && Get<bool>(game, "wordsPaused"),
+            "Dismissing a dialog after an interruption does not silently resume gameplay");
+    }
+
+    private static void PrepareStylesForChecks(VocabularyShooterGame game)
+    {
+        Call(game, "UpdateLayout");
+        Call(game, "EnsureStyles", CreateCheckLabelStyle());
+    }
+
+    private static GUIStyle CreateCheckLabelStyle()
+    {
+        return new GUIStyle(EditorGUIUtility.GetBuiltinSkin(EditorSkin.Game).label);
+    }
+
+    private static void CheckStyleCaching(VocabularyShooterGame game)
+    {
+        var source = CreateCheckLabelStyle();
+        Call(game, "EnsureStyles", source);
+        var originalTitle = Get<GUIStyle>(game, "titleStyle");
+        var originalSmall = Get<GUIStyle>(game, "smallStyle");
+        var fitted = (GUIStyle)Call(game, "CreateFittedHudStyle", "SCORE 100",
+            TextAnchor.MiddleCenter, 100f);
+        Call(game, "EnsureStyles", source);
+        Require(ReferenceEquals(originalTitle, Get<GUIStyle>(game, "titleStyle"))
+            && ReferenceEquals(originalSmall, Get<GUIStyle>(game, "smallStyle"))
+            && ReferenceEquals(fitted, Call(game, "CreateFittedHudStyle", "SCORE 100",
+                TextAnchor.MiddleCenter, 100f)),
+            "Repeated GUI passes reuse base and fitted styles");
+        var narrow = (GUIStyle)Call(game, "CreateFittedHudStyle", "SCORE 100",
+            TextAnchor.MiddleCenter, 50f);
+        Require(!ReferenceEquals(fitted, narrow) && fitted.fontSize >= narrow.fontSize,
+            "A layout change fits a distinct style without mutating cached styles");
+        var left = (GUIStyle)Call(game, "CreateFittedHudStyle", "SCORE 100",
+            TextAnchor.MiddleLeft, 100f);
+        Require(left.alignment == TextAnchor.MiddleLeft
+            && fitted.alignment == TextAnchor.MiddleCenter,
+            "Cached HUD styles preserve independent alignments");
+        var entry = Get<object>(Spawn(game, 132f, 300f), "entry");
+        var meaningStyle = (GUIStyle)Call(game, "CreateExplosionMeaningStyle", entry);
+        Require(ReferenceEquals(meaningStyle, Call(game, "CreateExplosionMeaningStyle", entry)),
+            "Explosion labels reuse styles by font size");
+        var originalFontSize = meaningStyle.fontSize;
+        var animatedStyle = (GUIStyle)Call(game, "ExplosionMeaningStyleForFontSize",
+            Mathf.RoundToInt(originalFontSize * 0.76f));
+        Require(animatedStyle.fontSize < originalFontSize && meaningStyle.fontSize == originalFontSize
+            && ReferenceEquals(meaningStyle, Call(game, "CreateExplosionMeaningStyle", entry)),
+            "Popup animation never shrinks the cached measurement style");
+        for (var index = 0; index < 600; index++)
+            Call(game, "CreateFittedSmallStyle", "SCORE " + index, 100f);
+        Require(Get<IDictionary>(game, "fittedStyles").Count <= 256,
+            "Changing scores cannot grow the fitted style cache without bound");
+        Call(game, "EnsureStyles", CreateCheckLabelStyle());
+        Require(!ReferenceEquals(originalTitle, Get<GUIStyle>(game, "titleStyle"))
+            && Get<IDictionary>(game, "fittedStyles").Count == 0
+            && Get<IDictionary>(game, "explosionMeaningStyles").Count == 0,
+            "Changing the skin rebuilds base styles and invalidates derived caches");
     }
 
     private static void CheckGunVolumeControlLayout(VocabularyShooterGame game)
@@ -1361,7 +1577,7 @@ public static class WordShooterGameplayChecks
     {
         var originalWidth = Get<float>(game, "uiWidth");
         var originalHeight = Get<float>(game, "uiHeight");
-        Call(game, "PrepareStyles");
+        PrepareStylesForChecks(game);
         Require(Get<GUIStyle>(game, "musicToggleStyle").fontSize == 13
             && Get<GUIStyle>(game, "backSwipeStyle").fontSize == 10,
             "Music toggle and Back arrow use their reduced font sizes");
@@ -1676,7 +1892,7 @@ public static class WordShooterGameplayChecks
 
     private static void CheckExplosionMeaningTypography(VocabularyShooterGame game)
     {
-        Call(game, "PrepareStyles");
+        PrepareStylesForChecks(game);
         var word = Spawn(game, 132f, 300f);
         var entry = Get<object>(word, "entry");
         var text = Get<string>(entry, "word");
@@ -1689,13 +1905,19 @@ public static class WordShooterGameplayChecks
         var meaningStyle = (GUIStyle)Call(game, "CreateExplosionMeaningStyle", entry);
         var meaning = Get<string>(entry, "meaning");
         var meaningContent = new GUIContent(meaning);
-        Require(meaningStyle.fontSize == wordFontSize && meaningStyle.wordWrap
+        Require(meaningStyle.fontSize == Mathf.Clamp(wordFontSize, 15, 18) && meaningStyle.wordWrap
             && meaningStyle.padding.horizontal == 0 && meaningStyle.padding.vertical == 0,
             "Explosion meaning matches the word font and has no hidden layout padding");
+        // The popup panel adds 16px side padding, 12px top/bottom padding, and keeps a 132px minimum text width.
+        const float panelPadding = 16f;
+        const float verticalPadding = 24f;
         var textSize = (Vector2)Call(game, "ExplosionMeaningTextSize", entry);
-        var maximumWidth = Get<float>(game, "uiWidth") - 24f;
-        var expectedWidth = Mathf.Min(meaningStyle.CalcSize(meaningContent).x, maximumWidth);
-        var expectedHeight = meaningStyle.CalcHeight(meaningContent, textSize.x) + 8f;
+        var maximumWidth = Get<float>(game, "uiWidth") - 40f;
+        var maximumTextWidth = maximumWidth - panelPadding * 2f;
+        var expectedTextWidth = Mathf.Min(maximumTextWidth,
+            Mathf.Max(132f, meaningStyle.CalcSize(meaningContent).x));
+        var expectedWidth = expectedTextWidth + panelPadding * 2f;
+        var expectedHeight = meaningStyle.CalcHeight(meaningContent, expectedTextWidth) + verticalPadding;
         Require(textSize.x < maximumWidth && Mathf.Abs(textSize.x - expectedWidth) < 0.1f,
             "A short meaning uses only its measured text width");
         Require(Mathf.Abs(textSize.y - expectedHeight) < 0.1f,
@@ -1713,11 +1935,12 @@ public static class WordShooterGameplayChecks
             var longStyle = (GUIStyle)Call(game, "CreateExplosionMeaningStyle", entry);
             var longSize = (Vector2)Call(game, "ExplosionMeaningTextSize", entry);
             var longContent = new GUIContent(longestMeaning);
-            var longHeight = longStyle.CalcHeight(longContent, longSize.x);
-            var longestWidth = Mathf.Min(longStyle.CalcSize(longContent).x, maximumWidth);
+            var longTextWidth = Mathf.Min(maximumTextWidth,
+                Mathf.Max(132f, longStyle.CalcSize(longContent).x));
+            var longHeight = longStyle.CalcHeight(longContent, longTextWidth);
             Require(longSize.x <= maximumWidth + 0.1f
-                && Mathf.Abs(longSize.x - longestWidth) < 0.1f
-                && longSize.y >= longHeight + 8f - 0.1f,
+                && Mathf.Abs(longSize.x - (longTextWidth + panelPadding * 2f)) < 0.1f
+                && longSize.y >= longHeight + verticalPadding - 0.1f,
                 "The longest catalog meaning fits without a clipping frame");
         }
         finally
@@ -2013,7 +2236,7 @@ public static class WordShooterGameplayChecks
 
     private static void CheckResultTitleFits(VocabularyShooterGame game)
     {
-        Call(game, "PrepareStyles");
+        PrepareStylesForChecks(game);
         var title = "ROUND COMPLETE  •  B2";
         foreach (var width in new[] { 340f, 280f, 220f })
         {

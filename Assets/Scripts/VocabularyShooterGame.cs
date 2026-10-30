@@ -497,6 +497,9 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private bool newRecord;
     private bool confirmingExit;
     private bool wordsPaused;
+    private bool applicationHasFocus = true;
+    private bool applicationPaused;
+    private bool applicationInterrupted;
     private Vector2 reviewScrollPosition;
     private float spawnTimer;
     private int score;
@@ -584,6 +587,12 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private GUIStyle feedbackStyle;
     private GUIStyle pauseExampleStyle;
     private GUIStyle wordDetailStyle;
+    private GUIStyle topicNameStyle;
+    private GUIStyle styleSource;
+    private const int FittedStyleCacheCapacity = 256;
+    private readonly Dictionary<(GUIStyle source, string text, TextAnchor alignment, float width), GUIStyle>
+        fittedStyles = new Dictionary<(GUIStyle, string, TextAnchor, float), GUIStyle>();
+    private readonly Dictionary<int, GUIStyle> explosionMeaningStyles = new Dictionary<int, GUIStyle>();
     private float uiScale;
     private float uiWidth;
     private float uiHeight;
@@ -619,8 +628,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
             return PlayerPrefs.GetInt(TopicUnlockTokenKey, 0);
         }
     }
-    private int UnlockedColorCount => Mathf.Clamp(1 + GetCompletedTopicCount() / TopicsPerCosmeticReward,
-        1, ColorBonusPalette.Length);
+    private int UnlockedColorCount => ColorCountForCompletedTopics(GetCompletedTopicCount());
     private int TotalExperience => PlayerPrefs.GetInt("WordGalaxy.TotalExperience", 0);
     private int PlayerRank
     {
@@ -650,7 +658,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         Screen.orientation = ScreenOrientation.Portrait;
         Application.targetFrameRate = 60;
 
-        if (FindObjectOfType<AudioListener>() == null)
+        if (FindAnyObjectByType<AudioListener>() == null)
         {
             gameObject.AddComponent<AudioListener>();
         }
@@ -753,7 +761,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
     private void UpdatePronunciation()
     {
-        if (wordsPaused) return;
+        if (wordsPaused || applicationInterrupted) return;
         if (pronunciationSource.isPlaying) return;
         if (pronunciationQueue.Count > 0)
         {
@@ -778,7 +786,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
             PauseAudioSource(backgroundMusicSource);
             PauseAudioSource(pronunciationSource);
         }
-        else
+        else if (!applicationInterrupted)
         {
             ResumeAudioSource(audioSource);
             ResumeAudioSource(gunAudioSource);
@@ -815,7 +823,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         PlayerPrefs.Save();
         if (backgroundMusicSource != null)
         {
-            if (enabled && !wordsPaused && !backgroundMusicSource.isPlaying)
+            if (enabled && !wordsPaused && !applicationInterrupted && !backgroundMusicSource.isPlaying)
                 backgroundMusicSource.Play();
             else if (!enabled)
                 backgroundMusicSource.Stop();
@@ -843,7 +851,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
     private void OnEnable()
     {
-        if (Application.isPlaying && backgroundMusicEnabled && backgroundMusicSource != null
+        if (Application.isPlaying && !applicationInterrupted && backgroundMusicEnabled && backgroundMusicSource != null
             && backgroundMusicSource.clip != null
             && !backgroundMusicSource.isPlaying)
             backgroundMusicSource.Play();
@@ -883,7 +891,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void CreateGameIfNeeded()
     {
-        if (FindObjectOfType<VocabularyShooterGame>() != null)
+        if (FindAnyObjectByType<VocabularyShooterGame>() != null)
         {
             return;
         }
@@ -894,6 +902,8 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
     private void Update()
     {
+        if (applicationInterrupted) return;
+
         UpdateLayout();
         HandleBackSwipeTouches();
         if (screenState == ScreenState.TopicSelection)
@@ -901,10 +911,10 @@ public sealed class VocabularyShooterGame : MonoBehaviour
             HandleTopicSelectionTouches();
         }
 
-        if (screenState == ScreenState.Playing && Input.GetKeyDown(KeyCode.Escape))
+        if (Input.GetKeyDown(KeyCode.Escape))
         {
-            confirmingExit = !confirmingExit;
-            ResetShootingInput();
+            NavigateBack();
+            return;
         }
 
         UpdatePronunciation();
@@ -918,7 +928,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
     private void AdvanceGameplay(float deltaTime)
     {
-        if (!CanShoot) return;
+        if (!CanShoot || applicationInterrupted || confirmingExit) return;
         if (wordsPaused)
         {
             HandlePausedInput();
@@ -1176,7 +1186,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
     private void TryFire()
     {
-        if (!CanShoot || wordsPaused || shotCooldown > 0f)
+        if (!CanShoot || wordsPaused || applicationInterrupted || confirmingExit || shotCooldown > 0f)
         {
             return;
         }
@@ -1283,6 +1293,15 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
     private void NavigateBack()
     {
+        ResetShootingInput();
+        ResetTopicSelectionTouch();
+        backSwipeFingerId = -1;
+        if (confirmingExit)
+        {
+            confirmingExit = false;
+            return;
+        }
+
         switch (screenState)
         {
             case ScreenState.TopicSelection:
@@ -1291,7 +1310,6 @@ public sealed class VocabularyShooterGame : MonoBehaviour
                 break;
             case ScreenState.Playing:
                 confirmingExit = true;
-                ResetShootingInput();
                 break;
             case ScreenState.Result:
                 screenState = ScreenState.TopicSelection;
@@ -1381,10 +1399,40 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
     private void OnApplicationFocus(bool hasFocus)
     {
-        if (!hasFocus)
+        applicationHasFocus = hasFocus;
+        UpdateApplicationInterruption();
+    }
+
+    private void OnApplicationPause(bool paused)
+    {
+        applicationPaused = paused;
+        UpdateApplicationInterruption();
+    }
+
+    private void UpdateApplicationInterruption()
+    {
+        var interrupted = applicationPaused || !applicationHasFocus;
+        if (applicationInterrupted == interrupted) return;
+        applicationInterrupted = interrupted;
+        if (interrupted)
         {
             ResetShootingInput();
             ResetTopicSelectionTouch();
+            backSwipeFingerId = -1;
+            adminLogoTapCount = 0;
+            if (screenState == ScreenState.Playing) SetWordsPaused(true);
+            PauseAudioSource(audioSource);
+            PauseAudioSource(gunAudioSource);
+            PauseAudioSource(backgroundMusicSource);
+            PauseAudioSource(pronunciationSource);
+            PlayerPrefs.Save();
+        }
+        else if (!wordsPaused)
+        {
+            ResumeAudioSource(audioSource);
+            ResumeAudioSource(gunAudioSource);
+            ResumeAudioSource(pronunciationSource);
+            if (backgroundMusicEnabled) ResumeAudioSource(backgroundMusicSource);
         }
     }
 
@@ -1409,7 +1457,10 @@ public sealed class VocabularyShooterGame : MonoBehaviour
                 DrawTopicSelection();
                 break;
             case ScreenState.Playing:
+                var previousEnabled = GUI.enabled;
+                GUI.enabled = previousEnabled && !confirmingExit;
                 DrawGameplay();
+                GUI.enabled = previousEnabled;
                 if (confirmingExit) DrawExitConfirmation();
                 break;
             case ScreenState.Result:
@@ -1425,8 +1476,17 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     private void PrepareStyles()
     {
         UpdateLayout();
+        EnsureStyles(GUI.skin.label);
+    }
 
-        titleStyle = new GUIStyle(GUI.skin.label)
+    private void EnsureStyles(GUIStyle labelStyle)
+    {
+        if (ReferenceEquals(styleSource, labelStyle)) return;
+        styleSource = labelStyle;
+        fittedStyles.Clear();
+        explosionMeaningStyles.Clear();
+
+        titleStyle = new GUIStyle(labelStyle)
         {
             fontSize = 34,
             fontStyle = FontStyle.Bold,
@@ -1435,7 +1495,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         };
         titleStyle.normal.textColor = WordShooterArt.SpaceText;
 
-        bodyStyle = new GUIStyle(GUI.skin.label)
+        bodyStyle = new GUIStyle(labelStyle)
         {
             fontSize = 20,
             alignment = TextAnchor.MiddleCenter,
@@ -1445,8 +1505,13 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
         smallStyle = new GUIStyle(bodyStyle) { fontSize = 15 };
         smallStyle.normal.textColor = new Color(0.6f, 0.76f, 0.9f);
+        topicNameStyle = new GUIStyle(smallStyle)
+        {
+            alignment = TextAnchor.MiddleLeft,
+            padding = new RectOffset(0, 0, 0, 0)
+        };
 
-        hudStyle = new GUIStyle(GUI.skin.label)
+        hudStyle = new GUIStyle(labelStyle)
         {
             fontSize = 16,
             fontStyle = FontStyle.Bold,
@@ -1457,7 +1522,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         };
         hudStyle.normal.textColor = WordShooterArt.SpaceText;
 
-        wordStyle = new GUIStyle(GUI.skin.label)
+        wordStyle = new GUIStyle(labelStyle)
         {
             fontSize = 21,
             fontStyle = FontStyle.Bold,
@@ -1469,7 +1534,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
             active = { textColor = Color.white }
         };
 
-        buttonStyle = new GUIStyle(GUI.skin.label)
+        buttonStyle = new GUIStyle(labelStyle)
         {
             fontSize = 21,
             fontStyle = FontStyle.Bold,
@@ -1666,7 +1731,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         if (DrawButton(new Rect(40f, uiHeight - 72f, uiWidth - 80f, 48f),
             "Back to levels", Color32(126, 87, 220)))
         {
-            screenState = ScreenState.Menu;
+            NavigateBack();
         }
     }
 
@@ -1746,8 +1811,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
     {
         if (DrawButton(new Rect(18f, 16f, 36f, 36f), "×", Color32(190, 62, 82)))
         {
-            confirmingExit = true;
-            ResetShootingInput();
+            NavigateBack();
         }
         DrawHudLabel(TopicHudRect, TopicShortNames[TopicIndex(currentTopic)], TextAnchor.MiddleLeft);
         DrawHudLabel(ScoreHudRect, "SCORE " + score, TextAnchor.MiddleCenter);
@@ -1785,45 +1849,40 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
     private GUIStyle CreateFittedHudStyle(string text, TextAnchor alignment, float width)
     {
-        var style = new GUIStyle(hudStyle) { alignment = alignment };
-        while (style.fontSize > 9 && style.CalcSize(new GUIContent(text)).x > width - 4f)
-        {
-            style.fontSize--;
-        }
-        return style;
+        return CreateFittedStyle(hudStyle, text, alignment, width);
     }
 
     private GUIStyle CreateFittedTitleStyle(string text, float width)
     {
-        var style = new GUIStyle(titleStyle)
-        {
-            wordWrap = false,
-            clipping = TextClipping.Clip
-        };
-        while (style.fontSize > 9 && style.CalcSize(new GUIContent(text)).x > width - 4f)
-            style.fontSize--;
-        return style;
+        return CreateFittedStyle(titleStyle, text, titleStyle.alignment, width);
     }
 
     private GUIStyle CreateFittedSmallStyle(string text, float width)
     {
-        var style = new GUIStyle(smallStyle) { wordWrap = false, clipping = TextClipping.Clip };
-        while (style.fontSize > 9 && style.CalcSize(new GUIContent(text)).x > width - 4f)
-            style.fontSize--;
-        return style;
+        return CreateFittedStyle(smallStyle, text, smallStyle.alignment, width);
     }
 
     private GUIStyle CreateTopicNameStyle(string text, float width)
     {
-        var style = new GUIStyle(smallStyle)
+        return CreateFittedStyle(topicNameStyle, text, TextAnchor.MiddleLeft, width);
+    }
+
+    private GUIStyle CreateFittedStyle(GUIStyle source, string text, TextAnchor alignment, float width)
+    {
+        var key = (source, text, alignment, width);
+        if (fittedStyles.TryGetValue(key, out var cached)) return cached;
+
+        var style = new GUIStyle(source)
         {
             wordWrap = false,
             clipping = TextClipping.Clip,
-            alignment = TextAnchor.MiddleLeft,
-            padding = new RectOffset(0, 0, 0, 0)
+            alignment = alignment
         };
-        while (style.fontSize > 9 && style.CalcSize(new GUIContent(text)).x > width - 4f)
+        var content = new GUIContent(text);
+        while (style.fontSize > 9 && style.CalcSize(content).x > width - 4f)
             style.fontSize--;
+        if (fittedStyles.Count >= FittedStyleCacheCapacity) fittedStyles.Clear();
+        fittedStyles.Add(key, style);
         return style;
     }
 
@@ -1846,7 +1905,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         GUI.Label(new Rect(panel.x + 12f, panel.y + 20f, panel.width - 24f, 46f),
             "Exit this round?", bodyStyle);
         GUI.Label(new Rect(panel.x + 18f, panel.y + 70f, panel.width - 36f, 48f),
-            "Progress from this round will not be saved.", smallStyle);
+            "Round progress will be lost. Earned XP is kept.", smallStyle);
 
         var buttonWidth = panel.width - 44f;
         if (DrawButton(new Rect(panel.x + 22f, panel.y + 128f, buttonWidth, 40f),
@@ -2178,14 +2237,23 @@ public sealed class VocabularyShooterGame : MonoBehaviour
 
     private GUIStyle CreateExplosionMeaningStyle(WordEntry entry)
     {
-        return new GUIStyle(feedbackStyle)
+        var fontSize = Mathf.Clamp(WordLabelFontSize(entry.word, WordWidth - 8f * WordVisualScale), 15, 18);
+        return ExplosionMeaningStyleForFontSize(fontSize);
+    }
+
+    private GUIStyle ExplosionMeaningStyleForFontSize(int fontSize)
+    {
+        if (explosionMeaningStyles.TryGetValue(fontSize, out var cached)) return cached;
+        var style = new GUIStyle(feedbackStyle)
         {
-            fontSize = Mathf.Clamp(WordLabelFontSize(entry.word, WordWidth - 8f * WordVisualScale), 15, 18),
+            fontSize = fontSize,
             wordWrap = true,
             alignment = TextAnchor.MiddleCenter,
             padding = new RectOffset(0, 0, 0, 0),
             clipping = TextClipping.Clip
         };
+        explosionMeaningStyles.Add(fontSize, style);
+        return style;
     }
 
     private Vector2 ExplosionMeaningTextSize(WordEntry entry)
@@ -2220,7 +2288,8 @@ public sealed class VocabularyShooterGame : MonoBehaviour
             var fadeOut = Mathf.Clamp01((ExplosionMeaningDuration - explosion.age) / 0.55f);
             var opacity = reveal * fadeOut;
             var scale = Mathf.Lerp(0.76f, 1f, reveal);
-            meaningStyle.fontSize = Mathf.Max(1, Mathf.RoundToInt(meaningStyle.fontSize * scale));
+            meaningStyle = ExplosionMeaningStyleForFontSize(
+                Mathf.Max(1, Mathf.RoundToInt(meaningStyle.fontSize * scale)));
             var panel = new Rect(x, y, panelSize.x, panelSize.y);
             var center = panel.center;
             panel.width *= scale;
@@ -2648,7 +2717,7 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         if (DrawButton(new Rect(40f, buttonY, uiWidth - 80f, 54f), "Play Again  •  " + currentLevel, Color32(42, 143, 112)))
             StartTopicRound(currentLevel, currentTopic);
         if (DrawButton(new Rect(40f, buttonY + 62f, uiWidth - 80f, 48f), "Choose Another Topic", Color32(126, 87, 220)))
-            screenState = ScreenState.TopicSelection;
+            NavigateBack();
         if (DrawButton(new Rect(40f, buttonY + 118f, uiWidth - 80f, 44f), "Choose a Level", Color32(64, 82, 132)))
             screenState = ScreenState.Menu;
     }
@@ -2910,6 +2979,11 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         return count;
     }
 
+    private static int ColorCountForCompletedTopics(int completedTopics)
+    {
+        return Mathf.Clamp(1 + completedTopics / TopicsPerCosmeticReward, 1, ColorBonusPalette.Length);
+    }
+
     private static int GetCompletedTopicCount()
     {
         EnsureTopicUnlockMigration();
@@ -2928,7 +3002,10 @@ public sealed class VocabularyShooterGame : MonoBehaviour
         }
         var topicIndex = TopicIndex(currentTopic);
         EnsureTopicChoiceAwardMigration();
-        var previousColorCount = UnlockedColorCount;
+        var rewardPending = PlayerPrefs.GetInt(TopicChoiceAwardedKey(topicIndex), 0) == 0;
+        var previousCompletedCount = GetCompletedTopicCount()
+            - (rewardPending && IsTopicComplete(topicIndex) ? 1 : 0);
+        var previousColorCount = ColorCountForCompletedTopics(previousCompletedCount);
         var canUnlockAnotherTopic = GetUnlockedTopicCount() < TopicIds.Length;
         PlayerPrefs.SetInt(TopicCompletionKey(topicIndex), 1);
         if (PlayerPrefs.GetInt(TopicChoiceAwardedKey(topicIndex), 0) == 0)

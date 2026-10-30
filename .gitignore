@@ -17,3 +17,9 @@
 *.opendb
 *.VC.db
 *.VC.VC.opendb
+# Unity Android build temp
+.utmp/
+
+# Signing keys must never be committed
+*.keystore
+*.jks
