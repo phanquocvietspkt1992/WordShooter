@@ -59,6 +59,8 @@ Install the corresponding Unity Build Support modules first. Android also requir
 
 ## Store release checklist
 
+Vietnamese checklist of remaining work: [RELEASE_TODO.md](docs/store/RELEASE_TODO.md).
+
 Status as of October 30, 2026. Checked items are verified in this repository; unchecked items still require work, credentials, decisions, or device/store validation. Production admin is intentionally retained.
 
 ### Completed
